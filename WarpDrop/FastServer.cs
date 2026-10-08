@@ -182,3 +182,75 @@ public sealed class FastServer : IDisposable
         catch { /* client went away */ }
     }
 
+    async Task<bool> Handle(Conn c, Request r)
+    {
+        string p = r.Path;
+
+        if (p is "/" or "/index.html")
+            return await Respond(c, r, 200, "text/html; charset=utf-8", _indexHtml);
+        if (p == "/favicon.ico")
+            return await Respond(c, r, 204, "text/plain", Array.Empty<byte>());
+
+        if (r.Q("k") != Token)
+            return await Respond(c, r, 403, "text/plain", "Forbidden: scan the QR code on your PC again."u8.ToArray());
+
+        if (p == "/api/state" && r.Method == "GET")
+        {
+            var files = Library.Snapshot().Select(f => new { id = f.Id, name = f.Name, size = f.Size });
+            var json = JsonSerializer.SerializeToUtf8Bytes(new { pc = Environment.MachineName, files, rateOut = RateOut, rateIn = RateIn });
+            return await Respond(c, r, 200, "application/json", json);
+        }
+
+        if (p.StartsWith("/f/") && r.Method is "GET" or "HEAD")
+        {
+            var seg = p.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (seg.Length >= 2 && int.TryParse(seg[1], out var id) && Library.Get(id) is { } f && File.Exists(f.Path))
+                return await SendFile(c, r, f);
+            return await Respond(c, r, 404, "text/plain", "File no longer shared."u8.ToArray());
+        }
+
+        if (p == "/api/bench/down" && r.Method == "GET") return await BenchDown(c, r);
+        if (p == "/api/bench/up" && r.Method is "PUT" or "POST") return await BenchUp(c, r);
+        if (p == "/api/bench/result" && r.Method == "POST")
+        {
+            await c.DrainAsync(r.ContentLength);
+            static double D(string s) => double.TryParse(s, System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : 0;
+            LastBench = new BenchResult(D(r.Q("down1")), D(r.Q("down4")), D(r.Q("up")));
+            Diag.Log($"Speed test from phone: down1={LastBench.Down1:0} Mbps down4={LastBench.Down4:0} Mbps up={LastBench.Up:0} Mbps");
+            return await Respond(c, r, 200, "application/json", "{}"u8.ToArray());
+        }
+
+        if (p == "/api/log" && r.Method == "POST")
+        {
+            await c.DrainAsync(r.ContentLength);
+            string msg = r.Q("msg");
+            Diag.Log("phone: " + (msg.Length > 500 ? msg[..500] : msg));
+            return await Respond(c, r, 200, "application/json", "{}"u8.ToArray());
+        }
+
+        if (p == "/api/up/init" && r.Method == "POST")
+            return await UploadInit(c, r);
+
+        if (p.StartsWith("/api/up/"))
+        {
+            var seg = p.Split('/', StringSplitOptions.RemoveEmptyEntries); // api, up, {id}, [done|cancel]
+            if (seg.Length >= 3 && int.TryParse(seg[2], out var uid))
+            {
+                if (seg.Length == 3 && r.Method == "PUT") return await UploadChunk(c, r, uid);
+                if (seg.Length == 4 && seg[3] == "status" && r.Method == "GET")
+                {
+                    if (!_uploads.TryGetValue(uid, out var su))
+                        return await Respond(c, r, 404, "application/json", JsonSerializer.SerializeToUtf8Bytes(new { received = -1 }));
+                    long[][] ranges;
+                    lock (su) ranges = su.Ranges.Select(kv => new[] { kv.Key, kv.Value }).ToArray();
+                    return await Respond(c, r, 200, "application/json",
+                        JsonSerializer.SerializeToUtf8Bytes(new { received = Interlocked.Read(ref su.Contig), ranges }));
+                }
+                if (seg.Length == 4 && seg[3] == "done" && r.Method == "POST") return await UploadDone(c, r, uid);
+                if (seg.Length == 4 && seg[3] == "cancel" && r.Method == "POST") return await UploadCancel(c, r, uid);
+            }
+        }
+
+        return await Respond(c, r, 404, "text/plain", "Not found"u8.ToArray());
+    }
+
