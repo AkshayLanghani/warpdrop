@@ -142,3 +142,43 @@ public sealed class FastServer : IDisposable
     public IReadOnlyList<Transfer> TransfersSnapshot() =>
         _transfers.Values.OrderByDescending(t => t.Id).ToList();
 
+    async Task AcceptLoop()
+    {
+        while (!_cts.IsCancellationRequested)
+        {
+            Socket c;
+            try { c = await _listener!.AcceptAsync(_cts.Token); }
+            catch when (_cts.IsCancellationRequested) { break; }
+            catch { continue; }
+            try
+            {
+                c.NoDelay = true;
+                c.SendBufferSize = SocketBuffer;
+                c.ReceiveBufferSize = SocketBuffer;
+            }
+            catch { }
+            _ = Task.Run(() => Serve(c));
+        }
+    }
+
+    async Task Serve(Socket s)
+    {
+        using var c = new Conn(s);
+        try
+        {
+            while (!_cts.IsCancellationRequested)
+            {
+                Request? req;
+                using (var idle = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token))
+                {
+                    idle.CancelAfter(TimeSpan.FromMinutes(2));
+                    req = await c.ReadHeadAsync(idle.Token);
+                }
+                if (req == null) return;
+                bool keep = await Handle(c, req);
+                if (!keep || !req.KeepAlive) return;
+            }
+        }
+        catch { /* client went away */ }
+    }
+
