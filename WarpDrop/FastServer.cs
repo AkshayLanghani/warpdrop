@@ -318,3 +318,26 @@ public sealed class FastServer : IDisposable
         }
     }
 
+    static bool TryParseRange(string header, long size, out long start, out long end)
+    {
+        start = 0; end = size - 1;
+        if (!header.StartsWith("bytes=", StringComparison.OrdinalIgnoreCase) || size == 0) return false;
+        var spec = header[6..].Split(',')[0].Trim();
+        int dash = spec.IndexOf('-');
+        if (dash < 0) return false;
+        string s = spec[..dash].Trim(), e = spec[(dash + 1)..].Trim();
+        if (s.Length == 0)
+        {
+            if (!long.TryParse(e, out var suffix) || suffix <= 0) return false;
+            start = Math.Max(0, size - suffix);
+            return true;
+        }
+        if (!long.TryParse(s, out start) || start >= size) return false;
+        if (e.Length > 0)
+        {
+            if (!long.TryParse(e, out end) || end < start) return false;
+            end = Math.Min(end, size - 1);
+        }
+        return true;
+    }
+
