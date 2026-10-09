@@ -379,3 +379,29 @@ public sealed class FastServer : IDisposable
         return await Respond(c, r, 200, "application/json", "{}"u8.ToArray());
     }
 
+    // ---------- phone -> PC ----------
+
+    async Task<bool> UploadInit(Conn c, Request r)
+    {
+        await c.DrainAsync(r.ContentLength);
+        if (!long.TryParse(r.Q("size"), out var size) || size < 0)
+            return await Respond(c, r, 400, "text/plain", "bad size"u8.ToArray());
+        string name = SafeName(r.Q("name"));
+        Directory.CreateDirectory(ReceiveDir);
+
+        string final, part;
+        SafeFileHandle handle;
+        lock (_nameLock)
+        {
+            final = UniquePath(ReceiveDir, name);
+            part = final + ".warpdrop-part";
+            handle = File.OpenHandle(part, FileMode.CreateNew, FileAccess.Write, FileShare.Read,
+                FileOptions.Asynchronous, preallocationSize: size);
+        }
+        var t = NewTransfer(Path.GetFileName(final), toPc: true, size);
+        int id = Interlocked.Increment(ref _nextUpload);
+        _uploads[id] = new Upload { Handle = handle, PartPath = part, FinalPath = final, T = t };
+        Diag.Log($"Upload #{id} start '{name}' {size / 1e6:0.0} MB");
+        return await Respond(c, r, 200, "application/json", JsonSerializer.SerializeToUtf8Bytes(new { id }));
+    }
+
