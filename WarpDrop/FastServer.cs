@@ -254,3 +254,67 @@ public sealed class FastServer : IDisposable
         return await Respond(c, r, 404, "text/plain", "Not found"u8.ToArray());
     }
 
+    // ---------- PC -> phone ----------
+
+    async Task<bool> SendFile(Conn c, Request r, SharedFile f)
+    {
+        using var h = File.OpenHandle(f.Path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        long size = RandomAccess.GetLength(h);
+        long start = 0, end = size - 1;
+        int status = 200;
+        if (r.Headers.TryGetValue("Range", out var range))
+        {
+            if (TryParseRange(range, size, out start, out end)) status = 206;
+            else
+            {
+                var bad = $"HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{size}\r\nContent-Length: 0\r\n\r\n";
+                await c.SendAllAsync(Encoding.ASCII.GetBytes(bad));
+                return true;
+            }
+        }
+        long len = size == 0 ? 0 : end - start + 1;
+
+        var head = new StringBuilder(256)
+            .Append("HTTP/1.1 ").Append(status).Append(status == 206 ? " Partial Content" : " OK").Append("\r\n")
+            .Append("Content-Type: application/octet-stream\r\n")
+            .Append("Content-Length: ").Append(len).Append("\r\n")
+            .Append("Accept-Ranges: bytes\r\n")
+            .Append("Content-Disposition: ").Append(Disposition(f.Name)).Append("\r\n")
+            .Append("Cache-Control: no-store\r\n");
+        if (status == 206) head.Append("Content-Range: bytes ").Append(start).Append('-').Append(end).Append('/').Append(size).Append("\r\n");
+        head.Append(r.KeepAlive ? "Connection: keep-alive\r\n\r\n" : "Connection: close\r\n\r\n");
+        await c.SendAllAsync(Encoding.ASCII.GetBytes(head.ToString()));
+        if (r.Method == "HEAD" || len == 0) return true;
+
+        var t = NewTransfer(f.Name, toPc: false, len);
+        // Fresh (not pooled) buffers: a read may still be in flight if the client disconnects mid-send.
+        byte[] a = GC.AllocateUninitializedArray<byte>(IoChunk), b = GC.AllocateUninitializedArray<byte>(IoChunk);
+        try
+        {
+            long pos = start, remaining = len;
+            int n = await RandomAccess.ReadAsync(h, a.AsMemory(0, (int)Math.Min(IoChunk, remaining)), pos);
+            while (true)
+            {
+                if (n <= 0) throw new IOException("File shrank while sending.");
+                pos += n;
+                remaining -= n;
+                // Read the next block from disk while this one goes out over the network.
+                var next = remaining > 0 ? RandomAccess.ReadAsync(h, b.AsMemory(0, (int)Math.Min(IoChunk, remaining)), pos) : default;
+                await c.SendAllAsync(a.AsMemory(0, n));
+                Interlocked.Add(ref _bytesOut, n);
+                Interlocked.Add(ref t.Done, n);
+                if (remaining <= 0) break;
+                n = await next;
+                (a, b) = (b, a);
+            }
+            Finish(t, ok: true);
+            return true;
+        }
+        catch
+        {
+            Finish(t, ok: false);
+            throw;
+        }
+    }
+
