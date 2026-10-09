@@ -341,3 +341,9 @@ public sealed class FastServer : IDisposable
         return true;
     }
 
+    static string Disposition(string name)
+    {
+        var ascii = new string(name.Select(ch => ch < 32 || ch > 126 || ch is '"' or '\\' ? '_' : ch).ToArray());
+        return $"attachment; filename=\"{ascii}\"; filename*=UTF-8''{Uri.EscapeDataString(name)}";
+    }
+
