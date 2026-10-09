@@ -347,3 +347,35 @@ public sealed class FastServer : IDisposable
         return $"attachment; filename=\"{ascii}\"; filename*=UTF-8''{Uri.EscapeDataString(name)}";
     }
 
+    // ---------- speed test: pure network, no disk ----------
+
+    async Task<bool> BenchDown(Conn c, Request r)
+    {
+        long len = long.TryParse(r.Q("bytes"), out var b) ? Math.Clamp(b, 0, 64L << 30) : 256L << 20;
+        await c.SendAllAsync(Encoding.ASCII.GetBytes(
+            $"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {len}\r\nCache-Control: no-store\r\n" +
+            (r.KeepAlive ? "Connection: keep-alive\r\n\r\n" : "Connection: close\r\n\r\n")));
+        while (len > 0)
+        {
+            int n = (int)Math.Min(BenchBlock.Length, len);
+            await c.SendAllAsync(BenchBlock.AsMemory(0, n));
+            Interlocked.Add(ref _bytesOut, n);
+            len -= n;
+        }
+        return true;
+    }
+
+    async Task<bool> BenchUp(Conn c, Request r)
+    {
+        var buf = GC.AllocateUninitializedArray<byte>(IoChunk);
+        long remaining = r.ContentLength;
+        while (remaining > 0)
+        {
+            int n = await c.ReadBodyAsync(buf.AsMemory(0, (int)Math.Min(buf.Length, remaining)));
+            if (n == 0) throw new IOException("Client disconnected.");
+            remaining -= n;
+            Interlocked.Add(ref _bytesIn, n);
+        }
+        return await Respond(c, r, 200, "application/json", "{}"u8.ToArray());
+    }
+
