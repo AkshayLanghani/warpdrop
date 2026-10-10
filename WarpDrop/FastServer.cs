@@ -458,3 +458,22 @@ public sealed class FastServer : IDisposable
         return await Respond(c, r, 200, "application/json", "{}"u8.ToArray());
     }
 
+    /// <summary>Records a written range. Parallel pieces land out of order; Contig is the gap-free prefix.</summary>
+    static void AddRange(Upload u, long start, long end)
+    {
+        lock (u)
+        {
+            var r = u.Ranges;
+            for (int i = r.Count - 1; i >= 0; i--)
+            {
+                long s = r.Keys[i], e = r.Values[i];
+                if (e < start || s > end) continue; // neither overlapping nor touching
+                start = Math.Min(start, s);
+                end = Math.Max(end, e);
+                r.RemoveAt(i);
+            }
+            r[start] = end;
+            if (r.Keys[0] == 0) Interlocked.Exchange(ref u.Contig, r.Values[0]);
+        }
+    }
+
