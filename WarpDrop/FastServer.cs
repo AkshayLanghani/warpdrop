@@ -513,3 +513,20 @@ public sealed class FastServer : IDisposable
         return await Respond(c, r, 200, "application/json", "{}"u8.ToArray());
     }
 
+    static string SafeName(string name)
+    {
+        name = Path.GetFileName(name.Replace('\\', '/').Split('/').Last());
+        foreach (var ch in Path.GetInvalidFileNameChars()) name = name.Replace(ch, '_');
+        name = name.Trim().TrimEnd('.');
+        return name.Length == 0 ? "file" : name;
+    }
+
+    static string UniquePath(string dir, string name)
+    {
+        string stem = Path.GetFileNameWithoutExtension(name), ext = Path.GetExtension(name);
+        string path = Path.Combine(dir, name);
+        for (int i = 2; File.Exists(path) || File.Exists(path + ".warpdrop-part"); i++)
+            path = Path.Combine(dir, $"{stem} ({i}){ext}");
+        return path;
+    }
+
