@@ -405,3 +405,56 @@ public sealed class FastServer : IDisposable
         return await Respond(c, r, 200, "application/json", JsonSerializer.SerializeToUtf8Bytes(new { id }));
     }
 
+    async Task<bool> UploadChunk(Conn c, Request r, int id)
+    {
+        if (!_uploads.TryGetValue(id, out var u))
+        {
+            await Respond(c, r, 404, "text/plain", "unknown upload"u8.ToArray());
+            return false; // body not consumed: close the connection
+        }
+        if (!long.TryParse(r.Q("off"), out var off) || off < 0 || r.ContentLength < 0 || off + r.ContentLength > u.T.Total)
+        {
+            await Respond(c, r, 400, "text/plain", "bad range"u8.ToArray());
+            return false;
+        }
+
+        bool verbose = r.ContentLength >= 64L << 20; // single-stream mode; parallel pieces would flood the log
+        if (verbose) Diag.Log($"Upload #{id}: receiving {r.ContentLength / 1e6:0.0} MB from offset {off / 1e6:0.0} MB");
+        byte[] a = GC.AllocateUninitializedArray<byte>(IoChunk), b = GC.AllocateUninitializedArray<byte>(IoChunk);
+        long pos = off, remaining = r.ContentLength, pendingStart = 0, pendingEnd = 0;
+        Task? pendingWrite = null;
+        // A phone that drops off Wi-Fi never sends a FIN; don't hold the upload hostage forever.
+        using var stall = new CancellationTokenSource();
+        try
+        {
+            while (remaining > 0)
+            {
+                int want = (int)Math.Min(IoChunk, remaining), filled = 0;
+                while (filled < want)
+                {
+                    stall.CancelAfter(BodyStallTimeout);
+                    int n = await c.ReadBodyAsync(a.AsMemory(filled, want - filled), stall.Token);
+                    if (n == 0) throw new IOException("Phone closed the connection mid-upload.");
+                    filled += n;
+                    Interlocked.Add(ref _bytesIn, n);
+                    Interlocked.Add(ref u.T.Done, n);
+                }
+                // Write this block to disk while the next one streams in from the network.
+                if (pendingWrite != null) { await pendingWrite; AddRange(u, pendingStart, pendingEnd); }
+                pendingWrite = RandomAccess.WriteAsync(u.Handle, a.AsMemory(0, filled), pos).AsTask();
+                (pendingStart, pendingEnd) = (pos, pos + filled);
+                pos += filled;
+                remaining -= filled;
+                (a, b) = (b, a);
+            }
+            if (pendingWrite != null) { await pendingWrite; AddRange(u, pendingStart, pendingEnd); }
+        }
+        catch (Exception ex)
+        {
+            Diag.Log($"Upload #{id}: stream broke after {(pos - off) / 1e6:0.0} MB ({ex.GetType().Name}: {ex.Message}); resume point {u.Contig / 1e6:0.0} MB");
+            throw;
+        }
+        if (verbose) Diag.Log($"Upload #{id}: received through {pos / 1e6:0.0} MB");
+        return await Respond(c, r, 200, "application/json", "{}"u8.ToArray());
+    }
+
