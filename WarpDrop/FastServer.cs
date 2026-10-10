@@ -477,3 +477,39 @@ public sealed class FastServer : IDisposable
         }
     }
 
+    async Task<bool> UploadDone(Conn c, Request r, int id)
+    {
+        await c.DrainAsync(r.ContentLength);
+        if (_uploads.TryGetValue(id, out var pending) && Interlocked.Read(ref pending.Contig) < pending.T.Total)
+        {
+            // Never save a truncated file: tell the phone where to resume instead.
+            Diag.Log($"Upload #{id}: finish refused, only {pending.Contig / 1e6:0.0} of {pending.T.Total / 1e6:0.0} MB present");
+            return await Respond(c, r, 409, "application/json", JsonSerializer.SerializeToUtf8Bytes(new { received = pending.Contig }));
+        }
+        if (!_uploads.TryRemove(id, out var u))
+            return await Respond(c, r, 404, "text/plain", "unknown upload"u8.ToArray());
+        u.Handle.Dispose();
+        string final;
+        lock (_nameLock)
+        {
+            final = File.Exists(u.FinalPath) ? UniquePath(Path.GetDirectoryName(u.FinalPath)!, Path.GetFileName(u.FinalPath)) : u.FinalPath;
+            File.Move(u.PartPath, final);
+        }
+        u.T.Done = u.T.Total;
+        Finish(u.T, ok: true);
+        FileReceived?.Invoke(final);
+        return await Respond(c, r, 200, "application/json", JsonSerializer.SerializeToUtf8Bytes(new { name = Path.GetFileName(final) }));
+    }
+
+    async Task<bool> UploadCancel(Conn c, Request r, int id)
+    {
+        await c.DrainAsync(r.ContentLength);
+        if (_uploads.TryRemove(id, out var u))
+        {
+            u.Handle.Dispose();
+            try { File.Delete(u.PartPath); } catch { }
+            Finish(u.T, ok: false);
+        }
+        return await Respond(c, r, 200, "application/json", "{}"u8.ToArray());
+    }
+
