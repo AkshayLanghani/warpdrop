@@ -595,3 +595,50 @@ public sealed class FastServer : IDisposable
     }
 }
 
+sealed class Request
+{
+    public string Method = "", Path = "/";
+    public readonly Dictionary<string, string> Query = new(StringComparer.Ordinal);
+    public readonly Dictionary<string, string> Headers = new(StringComparer.OrdinalIgnoreCase);
+    public bool KeepAlive;
+    public long ContentLength;
+
+    public string Q(string key) => Query.TryGetValue(key, out var v) ? v : "";
+
+    public static Request Parse(ReadOnlySpan<byte> head)
+    {
+        var r = new Request();
+        var lines = Encoding.Latin1.GetString(head).Split("\r\n");
+        var first = lines[0].Split(' ');
+        if (first.Length < 3) throw new InvalidDataException("Bad request line");
+        r.Method = first[0];
+        string target = first[1], version = first[2];
+
+        for (int i = 1; i < lines.Length; i++)
+        {
+            int colon = lines[i].IndexOf(':');
+            if (colon > 0) r.Headers[lines[i][..colon].Trim()] = lines[i][(colon + 1)..].Trim();
+        }
+
+        int q = target.IndexOf('?');
+        r.Path = Uri.UnescapeDataString(q >= 0 ? target[..q] : target);
+        if (q >= 0)
+        {
+            foreach (var pair in target[(q + 1)..].Split('&', StringSplitOptions.RemoveEmptyEntries))
+            {
+                int eq = pair.IndexOf('=');
+                string k = eq >= 0 ? pair[..eq] : pair, v = eq >= 0 ? pair[(eq + 1)..] : "";
+                r.Query[Uri.UnescapeDataString(k.Replace('+', ' '))] = Uri.UnescapeDataString(v.Replace('+', ' '));
+            }
+        }
+
+        r.Headers.TryGetValue("Connection", out var conn);
+        conn ??= "";
+        r.KeepAlive = version == "HTTP/1.1"
+            ? !conn.Contains("close", StringComparison.OrdinalIgnoreCase)
+            : conn.Contains("keep-alive", StringComparison.OrdinalIgnoreCase);
+        if (r.Headers.TryGetValue("Content-Length", out var cl) && long.TryParse(cl, out var len)) r.ContentLength = len;
+        return r;
+    }
+}
+
