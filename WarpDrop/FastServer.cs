@@ -530,3 +530,68 @@ public sealed class FastServer : IDisposable
         return path;
     }
 
+    // ---------- plumbing ----------
+
+    static async Task<bool> Respond(Conn c, Request r, int status, string type, byte[] body)
+    {
+        string reason = status switch { 200 => "OK", 204 => "No Content", 400 => "Bad Request", 403 => "Forbidden", 404 => "Not Found", _ => "Error" };
+        var head = $"HTTP/1.1 {status} {reason}\r\nContent-Type: {type}\r\nContent-Length: {body.Length}\r\nCache-Control: no-store\r\n" +
+                   (r.KeepAlive ? "Connection: keep-alive\r\n\r\n" : "Connection: close\r\n\r\n");
+        var bytes = new byte[Encoding.ASCII.GetByteCount(head) + (r.Method == "HEAD" ? 0 : body.Length)];
+        int n = Encoding.ASCII.GetBytes(head, bytes);
+        if (r.Method != "HEAD") body.CopyTo(bytes, n);
+        await c.SendAllAsync(bytes);
+        return true;
+    }
+
+    Transfer NewTransfer(string name, bool toPc, long total)
+    {
+        var t = new Transfer { Id = Interlocked.Increment(ref _nextTransfer), Name = name, ToPc = toPc, Total = total };
+        _transfers[t.Id] = t;
+        return t;
+    }
+
+    void Finish(Transfer t, bool ok)
+    {
+        t.Ended = Environment.TickCount64;
+        t.State = ok ? 1 : 2;
+        long done = Interlocked.Read(ref t.Done);
+        Diag.Log($"Transfer {(t.ToPc ? "phone->PC" : "PC->phone")} '{t.Name}' ok={ok} {done / 1e6:0.0} MB of {t.Total / 1e6:0.0} MB in {t.Seconds:0.0}s = {done / 1e6 / t.Seconds:0.0} MB/s");
+        // Safari sometimes opens and drops a connection before the real download; don't list those.
+        if (!ok && Interlocked.Read(ref t.Done) < 1024 * 1024) _transfers.TryRemove(t.Id, out _);
+    }
+
+    void UpdateRates()
+    {
+        double now = _rateClock.Elapsed.TotalSeconds, dt = now - _lastTick;
+        if (dt <= 0) return;
+        _lastTick = now;
+        long o = Interlocked.Read(ref _bytesOut), i = Interlocked.Read(ref _bytesIn);
+        RateOut = RateOut * 0.4 + (o - _lastOut) / dt * 0.6;
+        RateIn = RateIn * 0.4 + (i - _lastIn) / dt * 0.6;
+        if (RateOut < 1024) RateOut = 0;
+        if (RateIn < 1024) RateIn = 0;
+        _lastOut = o;
+        _lastIn = i;
+
+        foreach (var t in _transfers.Values)
+        {
+            long d = Interlocked.Read(ref t.Done);
+            t.Speed = t.State == 0 ? t.Speed * 0.4 + (d - t.LastDone) / dt * 0.6 : 0;
+            t.LastDone = d;
+        }
+        // Keep the activity list short: all active transfers + the 30 most recent finished ones.
+        foreach (var old in _transfers.Values.Where(t => t.State != 0).OrderByDescending(t => t.Id).Skip(30))
+            _transfers.TryRemove(old.Id, out _);
+    }
+
+    public void Dispose()
+    {
+        _cts.Cancel();
+        _rateTimer.Dispose();
+        try { _listener?.Dispose(); } catch { }
+        foreach (var u in _uploads.Values) u.Handle.Dispose();
+        _uploads.Clear();
+    }
+}
+
