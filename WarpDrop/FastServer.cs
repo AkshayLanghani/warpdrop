@@ -642,3 +642,75 @@ sealed class Request
     }
 }
 
+sealed class Conn : IDisposable
+{
+    readonly Socket _s;
+    readonly byte[] _buf = new byte[64 * 1024];
+    int _start, _end;
+
+    public Conn(Socket s) => _s = s;
+
+    public async Task<Request?> ReadHeadAsync(CancellationToken ct)
+    {
+        while (true)
+        {
+            int idx = _buf.AsSpan(_start, _end - _start).IndexOf("\r\n\r\n"u8);
+            if (idx >= 0)
+            {
+                var req = Request.Parse(_buf.AsSpan(_start, idx));
+                _start += idx + 4;
+                return req;
+            }
+            if (_start > 0)
+            {
+                Buffer.BlockCopy(_buf, _start, _buf, 0, _end - _start);
+                _end -= _start;
+                _start = 0;
+            }
+            if (_end == _buf.Length) throw new InvalidDataException("Headers too large");
+            int n = await _s.ReceiveAsync(_buf.AsMemory(_end), SocketFlags.None, ct);
+            if (n == 0) return null;
+            _end += n;
+        }
+    }
+
+    /// <summary>Reads body bytes; callers must size <paramref name="dst"/> to what remains of the body.</summary>
+    public ValueTask<int> ReadBodyAsync(Memory<byte> dst, CancellationToken ct = default)
+    {
+        if (_end > _start)
+        {
+            int n = Math.Min(dst.Length, _end - _start);
+            _buf.AsSpan(_start, n).CopyTo(dst.Span);
+            _start += n;
+            return ValueTask.FromResult(n);
+        }
+        return _s.ReceiveAsync(dst, SocketFlags.None, ct);
+    }
+
+    public async Task DrainAsync(long length)
+    {
+        var scratch = new byte[8192];
+        while (length > 0)
+        {
+            int n = await ReadBodyAsync(scratch.AsMemory(0, (int)Math.Min(scratch.Length, length)));
+            if (n == 0) throw new IOException("Client disconnected.");
+            length -= n;
+        }
+    }
+
+    public async ValueTask SendAllAsync(ReadOnlyMemory<byte> data)
+    {
+        while (data.Length > 0)
+        {
+            int n = await _s.SendAsync(data, SocketFlags.None);
+            if (n <= 0) throw new IOException("Send failed.");
+            data = data[n..];
+        }
+    }
+
+    public void Dispose()
+    {
+        try { _s.Shutdown(SocketShutdown.Both); } catch { }
+        _s.Dispose();
+    }
+}
