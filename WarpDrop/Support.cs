@@ -117,3 +117,24 @@ public static class Qr
         new PayloadGenerator.WiFi(ssid, password, PayloadGenerator.WiFi.Authentication.WPA).ToString();
 }
 
+public sealed class TransferRow : INotifyPropertyChanged
+{
+    string _title = "", _detail = "";
+    double _percent;
+    Brush _accent = Brushes.White;
+
+    public required int Id { get; init; }
+    public string Title { get => _title; set => Set(ref _title, value); }
+    public string Detail { get => _detail; set => Set(ref _detail, value); }
+    public double Percent { get => _percent; set => Set(ref _percent, value); }
+    public Brush Accent { get => _accent; set => Set(ref _accent, value); }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    void Set<T>(ref T field, T value, [CallerMemberName] string? name = null)
+    {
+        if (EqualityComparer<T>.Default.Equals(field, value)) return;
+        field = value;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+    }
+}
