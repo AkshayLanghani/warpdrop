@@ -52,3 +52,43 @@ public static class Fmt
     }
 }
 
+/// <summary>Persisted so the iPhone remembers the network and auto-joins next time.</summary>
+public sealed class Settings
+{
+    public string Ssid { get; set; } = "";
+    public string Password { get; set; } = "";
+    public string ReceiveDir { get; set; } = "";
+
+    static string FilePath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "WarpDrop", "settings.json");
+
+    public static string RandomString(int len) =>
+        RandomNumberGenerator.GetString("abcdefghjkmnpqrstuvwxyz23456789", len);
+
+    public static Settings Load()
+    {
+        Settings? s = null;
+        try { s = JsonSerializer.Deserialize<Settings>(File.ReadAllText(FilePath)); } catch { }
+        s ??= new Settings();
+        bool dirty = false;
+        if (string.IsNullOrWhiteSpace(s.Ssid)) { s.Ssid = "WarpDrop-" + RandomString(4).ToUpperInvariant(); dirty = true; }
+        if (s.Password.Length < 8) { s.Password = RandomString(12); dirty = true; }
+        if (string.IsNullOrWhiteSpace(s.ReceiveDir))
+        {
+            s.ReceiveDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "WarpDrop");
+            dirty = true;
+        }
+        if (dirty) s.Save();
+        return s;
+    }
+
+    public void Save()
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
+            File.WriteAllText(FilePath, JsonSerializer.Serialize(this));
+        }
+        catch { }
+    }
+}
+
