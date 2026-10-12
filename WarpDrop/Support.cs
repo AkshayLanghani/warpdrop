@@ -92,3 +92,28 @@ public sealed class Settings
     }
 }
 
+public static class Qr
+{
+    public static BitmapSource Render(string text, int scale = 8)
+    {
+        using var gen = new QRCodeGenerator();
+        using var data = gen.CreateQrCode(text, QRCodeGenerator.ECCLevel.M);
+        var m = data.ModuleMatrix; // includes the quiet zone
+        int n = m.Count, px = n * scale;
+        var pixels = new byte[px * px];
+        for (int y = 0; y < n; y++)
+            for (int x = 0; x < n; x++)
+            {
+                byte v = m[y][x] ? (byte)0 : (byte)255;
+                for (int dy = 0; dy < scale; dy++)
+                    pixels.AsSpan((y * scale + dy) * px + x * scale, scale).Fill(v);
+            }
+        var bmp = BitmapSource.Create(px, px, 96, 96, PixelFormats.Gray8, null, pixels, px);
+        bmp.Freeze();
+        return bmp;
+    }
+
+    public static string WifiPayload(string ssid, string password) =>
+        new PayloadGenerator.WiFi(ssid, password, PayloadGenerator.WiFi.Authentication.WPA).ToString();
+}
+
