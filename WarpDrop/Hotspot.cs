@@ -111,3 +111,17 @@ public sealed class Hotspot
         _wasOnBefore = false;
     }
 
+    static async Task<bool> TryUseFiveGhzAsync(NetworkOperatorTetheringAccessPointConfiguration cfg)
+    {
+        try
+        {
+            if (!Windows.Foundation.Metadata.ApiInformation.IsPropertyPresent(
+                    "Windows.Networking.NetworkOperators.NetworkOperatorTetheringAccessPointConfiguration", "Band"))
+                return false;
+            if (!await cfg.IsBandSupportedAsync(TetheringWiFiBand.FiveGigahertz)) return false;
+            cfg.Band = TetheringWiFiBand.FiveGigahertz;
+            return true;
+        }
+        catch { return false; }
+    }
+
