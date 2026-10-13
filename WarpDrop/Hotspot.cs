@@ -74,3 +74,40 @@ public sealed class Hotspot
         try { await _mgr.StartTetheringAsync(); } catch { }
     }
 
+    /// <summary>Remembers the user's own hotspot setup before WarpDrop touches anything.</summary>
+    public void CaptureOriginal()
+    {
+        if (_previous != null) return;
+        try
+        {
+            if (CreateManager(out _) is not { } m) return;
+            _previous = m.GetCurrentAccessPointConfiguration();
+            _wasOnBefore = m.TetheringOperationalState == TetheringOperationalState.On;
+        }
+        catch { }
+    }
+
+    public async Task StopAsync()
+    {
+        if (_mgr == null || !_started) return;
+        _started = false;
+        try { await _mgr.StopTetheringAsync(); } catch { }
+    }
+
+    /// <summary>Puts back the user's own hotspot name/password/band, and turns it on if it was on.</summary>
+    public async Task RestoreOriginalAsync()
+    {
+        if (_previous == null) return;
+        try
+        {
+            if (CreateManager(out _) is { } m)
+            {
+                await m.ConfigureAccessPointAsync(_previous);
+                if (_wasOnBefore) await m.StartTetheringAsync();
+            }
+        }
+        catch { }
+        _previous = null;
+        _wasOnBefore = false;
+    }
+
