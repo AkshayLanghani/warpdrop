@@ -67,3 +67,10 @@ public sealed class Hotspot
         }
     }
 
+    /// <summary>Windows switches the hotspot off when idle; turn it back on.</summary>
+    public async Task RestartAsync()
+    {
+        if (_mgr == null || !_started) return;
+        try { await _mgr.StartTetheringAsync(); } catch { }
+    }
+
