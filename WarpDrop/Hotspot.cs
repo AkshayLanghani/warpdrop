@@ -193,3 +193,35 @@ public sealed class Hotspot
         return null;
     }
 
+    /// <summary>Negotiated PHY rate of the hotspot's virtual adapter, in bit/s (0 if unknown).</summary>
+    public static long HotspotLinkBps()
+    {
+        try
+        {
+            return NetworkInterface.GetAllNetworkInterfaces()
+                .Where(ni => ni.OperationalStatus == OperationalStatus.Up
+                             && ni.GetIPProperties().UnicastAddresses.Any(a => a.Address.ToString().StartsWith("192.168.137.")))
+                .Select(ni => ni.Speed).FirstOrDefault();
+        }
+        catch { return 0; }
+    }
+
+    /// <summary>
+    /// A physical Ethernet link (e.g. a USB-C Ethernet adapter cabled to an iPhone's USB-C
+    /// Ethernet adapter). Both sides self-assign 169.254.x.x, so no setup is needed.
+    /// </summary>
+    public static (string Ip, long Bps)? FindWiredLink()
+    {
+        string[] skip = { "virtual", "hyper-v", "vmware", "virtualbox", "vpn", "tap-", "wsl", "loopback", "bluetooth", "wi-fi", "wireless", "802.11" };
+        foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+        {
+            if (ni.OperationalStatus != OperationalStatus.Up
+                || ni.NetworkInterfaceType is not (NetworkInterfaceType.Ethernet or NetworkInterfaceType.GigabitEthernet)
+                || skip.Any(s => ni.Description.Contains(s, StringComparison.OrdinalIgnoreCase)))
+                continue;
+            var ip = ni.GetIPProperties().UnicastAddresses.FirstOrDefault(a => a.Address.AddressFamily == AddressFamily.InterNetwork);
+            if (ip != null) return (ip.Address.ToString(), ni.Speed);
+        }
+        return null;
+    }
+
