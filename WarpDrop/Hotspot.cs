@@ -167,3 +167,29 @@ public sealed class Hotspot
         return string.IsNullOrWhiteSpace(r.AdditionalErrorMessage) ? msg : msg + " " + r.AdditionalErrorMessage;
     }
 
+    public static async Task<string> WaitForHotspotIpAsync()
+    {
+        for (int i = 0; i < 40; i++)
+        {
+            if (FindHotspotIp() is { } ip) return ip;
+            await Task.Delay(250);
+        }
+        return "192.168.137.1"; // Windows ICS default
+    }
+
+    static string? FindHotspotIp()
+    {
+        foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+        {
+            if (ni.OperationalStatus != OperationalStatus.Up) continue;
+            foreach (var a in ni.GetIPProperties().UnicastAddresses)
+            {
+                if (a.Address.AddressFamily != AddressFamily.InterNetwork) continue;
+                string s = a.Address.ToString();
+                if (s.StartsWith("192.168.137.")) return s;
+                if (ni.Description.Contains("Wi-Fi Direct Virtual", StringComparison.OrdinalIgnoreCase) && !s.StartsWith("169.254.")) return s;
+            }
+        }
+        return null;
+    }
+
