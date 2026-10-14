@@ -125,3 +125,45 @@ public sealed class Hotspot
         catch { return false; }
     }
 
+    static NetworkOperatorTetheringManager? CreateManager(out string why)
+    {
+        why = "Windows Mobile Hotspot needs a connection to share. Connect the laptop to Wi-Fi or Ethernet.";
+        var candidates = new List<ConnectionProfile>();
+        if (NetworkInformation.GetInternetConnectionProfile() is { } inet) candidates.Add(inet);
+        candidates.AddRange(NetworkInformation.GetConnectionProfiles());
+
+        foreach (var p in candidates)
+        {
+            try
+            {
+                var cap = NetworkOperatorTetheringManager.GetTetheringCapabilityFromConnectionProfile(p);
+                if (cap != TetheringCapability.Enabled)
+                {
+                    why = cap switch
+                    {
+                        TetheringCapability.DisabledByGroupPolicy => "Mobile Hotspot is disabled by group policy.",
+                        TetheringCapability.DisabledByHardwareLimitation => "This Wi-Fi adapter can't host a hotspot.",
+                        TetheringCapability.DisabledDueToUnknownCause => "Mobile Hotspot is unavailable (is Wi-Fi turned on?).",
+                        _ => "Mobile Hotspot unavailable: " + cap,
+                    };
+                    continue;
+                }
+                return NetworkOperatorTetheringManager.CreateFromConnectionProfile(p);
+            }
+            catch (Exception ex) { why = ex.Message; }
+        }
+        return null;
+    }
+
+    static string Describe(NetworkOperatorTetheringOperationResult r)
+    {
+        string msg = r.Status switch
+        {
+            TetheringOperationStatus.WiFiDeviceOff => "Wi-Fi is off. Turn Wi-Fi on and try again.",
+            TetheringOperationStatus.MobileBroadbandDeviceOff => "The shared connection is off.",
+            TetheringOperationStatus.OperationInProgress => "Windows is still switching the hotspot. Try again in a moment.",
+            _ => "Mobile Hotspot couldn't start (" + r.Status + ").",
+        };
+        return string.IsNullOrWhiteSpace(r.AdditionalErrorMessage) ? msg : msg + " " + r.AdditionalErrorMessage;
+    }
+
