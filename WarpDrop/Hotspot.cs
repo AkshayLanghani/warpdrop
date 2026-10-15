@@ -225,3 +225,21 @@ public sealed class Hotspot
         return null;
     }
 
+    /// <summary>Best IPv4 address on the current LAN, used when the hotspot can't start.</summary>
+    public static string? FindLanIp()
+    {
+        string[] skip = { "virtual", "hyper-v", "vmware", "virtualbox", "vpn", "tap-", "wsl", "loopback", "bluetooth" };
+        return NetworkInterface.GetAllNetworkInterfaces()
+            .Where(ni => ni.OperationalStatus == OperationalStatus.Up
+                         && ni.NetworkInterfaceType is not (NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel)
+                         && !skip.Any(s => ni.Description.Contains(s, StringComparison.OrdinalIgnoreCase)))
+            .OrderByDescending(ni => ni.GetIPProperties().GatewayAddresses.Any(g => g.Address.AddressFamily == AddressFamily.InterNetwork))
+            .ThenByDescending(ni => ni.NetworkInterfaceType == NetworkInterfaceType.Wireless80211)
+            .SelectMany(ni => ni.GetIPProperties().UnicastAddresses)
+            .Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork && !a.Address.ToString().StartsWith("169.254."))
+            .Select(a => a.Address.ToString())
+            .FirstOrDefault();
+    }
+
+}
+
