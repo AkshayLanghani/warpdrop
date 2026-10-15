@@ -243,3 +243,41 @@ public sealed class Hotspot
 
 }
 
+/// <summary>
+/// The laptop's own Wi-Fi client connection. It shares the one radio with the hotspot, so
+/// while it is connected the hotspot is pinned to its channel (or time-sliced against it).
+/// Disconnecting it gives the WarpDrop network the whole radio and a free channel choice.
+/// </summary>
+public static class WifiStation
+{
+    public sealed record Info(string Interface, bool Connected, string? Profile, string? Band);
+
+    public static Info? Query()
+    {
+        string output = Netsh("wlan show interfaces");
+        string? Get(string key) => output.Split('\n')
+            .Select(l => l.Split(':', 2))
+            .Where(p => p.Length == 2 && p[0].Trim().Equals(key, StringComparison.OrdinalIgnoreCase))
+            .Select(p => p[1].Trim()).FirstOrDefault();
+        string? name = Get("Name");
+        if (name == null) return null;
+        return new Info(name, Get("State")?.Equals("connected", StringComparison.OrdinalIgnoreCase) == true, Get("Profile"), Get("Band"));
+    }
+
+    public static void Disconnect(string iface) => Netsh($"wlan disconnect interface=\"{iface}\"");
+
+    public static void Connect(string iface, string profile) => Netsh($"wlan connect name=\"{profile}\" interface=\"{iface}\"");
+
+    static string Netsh(string args)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo("netsh", args) { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
+            using var p = Process.Start(psi)!;
+            string output = p.StandardOutput.ReadToEnd();
+            p.WaitForExit(5000);
+            return output;
+        }
+        catch { return ""; }
+    }
+}
