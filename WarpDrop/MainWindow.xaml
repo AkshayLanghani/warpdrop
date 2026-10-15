@@ -1,0 +1,272 @@
+<Window x:Class="WarpDrop.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="WarpDrop" Width="1180" Height="780" MinWidth="980" MinHeight="660"
+        WindowStartupLocation="CenterScreen"
+        Background="#0E1014" Foreground="#E8EAF0"
+        FontFamily="Segoe UI Variable Text, Segoe UI" FontSize="14"
+        AllowDrop="True" DragOver="OnDragOver" Drop="OnDrop"
+        UseLayoutRounding="True">
+  <Window.Resources>
+    <SolidColorBrush x:Key="Card" Color="#161A22"/>
+    <SolidColorBrush x:Key="Line" Color="#232937"/>
+    <SolidColorBrush x:Key="Mute" Color="#8B93A7"/>
+    <LinearGradientBrush x:Key="Accent" StartPoint="0,0" EndPoint="1,0">
+      <GradientStop Color="#4F8CFF" Offset="0"/>
+      <GradientStop Color="#22D3EE" Offset="1"/>
+    </LinearGradientBrush>
+
+    <Style x:Key="CardBorder" TargetType="Border">
+      <Setter Property="Background" Value="{StaticResource Card}"/>
+      <Setter Property="BorderBrush" Value="{StaticResource Line}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="CornerRadius" Value="16"/>
+      <Setter Property="Padding" Value="20"/>
+    </Style>
+    <Style x:Key="Label" TargetType="TextBlock">
+      <Setter Property="Foreground" Value="{StaticResource Mute}"/>
+      <Setter Property="FontSize" Value="12"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+    </Style>
+    <Style TargetType="Button">
+      <Setter Property="Foreground" Value="#E8EAF0"/>
+      <Setter Property="Background" Value="#232835"/>
+      <Setter Property="Padding" Value="14,8"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="b" Background="{TemplateBinding Background}" CornerRadius="10" Padding="{TemplateBinding Padding}">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="b" Property="Opacity" Value="0.82"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="Primary" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+      <Setter Property="Background" Value="{StaticResource Accent}"/>
+      <Setter Property="Foreground" Value="White"/>
+    </Style>
+    <Style x:Key="Switch" TargetType="ToggleButton">
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Foreground" Value="#E8EAF0"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ToggleButton">
+            <Border x:Name="pill" Background="#1C2230" CornerRadius="18" Padding="8,6,16,6">
+              <StackPanel Orientation="Horizontal">
+                <Border x:Name="track" Width="54" Height="30" CornerRadius="15" Background="#2E3546">
+                  <Ellipse x:Name="thumb" Width="24" Height="24" Fill="White" HorizontalAlignment="Left" Margin="3,0"/>
+                </Border>
+                <ContentPresenter Margin="12,0,0,0" VerticalAlignment="Center"/>
+              </StackPanel>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="track" Property="Background" Value="{StaticResource Accent}"/>
+                <Setter TargetName="thumb" Property="HorizontalAlignment" Value="Right"/>
+              </Trigger>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="pill" Property="Background" Value="#232A3A"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter TargetName="pill" Property="Opacity" Value="0.6"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style TargetType="ProgressBar">
+      <Setter Property="Height" Value="6"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ProgressBar">
+            <Grid>
+              <Border Background="#232835" CornerRadius="3"/>
+              <Border x:Name="PART_Track"/>
+              <Border x:Name="PART_Indicator" HorizontalAlignment="Left" CornerRadius="3" Background="{TemplateBinding Foreground}"/>
+            </Grid>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+  </Window.Resources>
+
+  <Grid Margin="24,16,24,24">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="*"/>
+    </Grid.RowDefinitions>
+
+    <!-- Header -->
+    <DockPanel Margin="0,0,0,16">
+      <ToggleButton x:Name="NetSwitch" DockPanel.Dock="Right" Style="{StaticResource Switch}" Click="OnNetSwitch" VerticalAlignment="Center" Margin="12,0,0,0"
+                    ToolTip="ON: dedicated radio, separate WarpDrop network, laptop internet off. OFF: everything restored.">
+        <TextBlock x:Name="SwitchLabel" Text="WarpDrop network OFF" FontWeight="SemiBold" FontSize="15"/>
+      </ToggleButton>
+      <Border DockPanel.Dock="Right" CornerRadius="14" Padding="14,7" Background="#1C2230" VerticalAlignment="Center" MaxWidth="520">
+        <StackPanel Orientation="Horizontal">
+          <Ellipse x:Name="StatusDot" Width="9" Height="9" Fill="#F59E0B" Margin="0,0,9,0" VerticalAlignment="Center"/>
+          <TextBlock x:Name="StatusText" Text="Starting…" TextTrimming="CharacterEllipsis"/>
+        </StackPanel>
+      </Border>
+      <StackPanel Orientation="Horizontal">
+        <TextBlock Text="Warp" FontSize="28" FontWeight="Black"/>
+        <TextBlock Text="Drop" FontSize="28" FontWeight="Black" Foreground="{StaticResource Accent}"/>
+        <TextBlock Text="PC ⇄ iPhone at full Wi-Fi speed" Foreground="{StaticResource Mute}" VerticalAlignment="Bottom" Margin="14,0,0,6"/>
+      </StackPanel>
+    </DockPanel>
+
+    <!-- QR codes + speed -->
+    <Grid Grid.Row="1" Margin="0,0,0,16">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*"/>
+        <ColumnDefinition Width="16"/>
+        <ColumnDefinition Width="*"/>
+        <ColumnDefinition Width="16"/>
+        <ColumnDefinition Width="1.15*"/>
+      </Grid.ColumnDefinitions>
+
+      <Border Style="{StaticResource CardBorder}">
+        <StackPanel>
+          <TextBlock x:Name="Step1Label" Style="{StaticResource Label}" Text="STEP 1 · JOIN WI-FI"/>
+          <Border Background="White" CornerRadius="12" Padding="6" Margin="0,12" HorizontalAlignment="Center">
+            <Grid Width="190" Height="190">
+              <Image x:Name="WifiQr" RenderOptions.BitmapScalingMode="NearestNeighbor"/>
+              <TextBlock x:Name="WifiQrPlaceholder" Text="Starting hotspot…" Foreground="#666" HorizontalAlignment="Center" VerticalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center"/>
+            </Grid>
+          </Border>
+          <TextBlock x:Name="SsidText" FontWeight="SemiBold" TextAlignment="Center" TextWrapping="Wrap"/>
+          <TextBlock x:Name="PassText" Foreground="{StaticResource Mute}" TextAlignment="Center" Margin="0,2,0,0" TextWrapping="Wrap"/>
+          <TextBlock x:Name="WifiHint" Text="Open the iPhone Camera, point it here, tap “Join”." Foreground="{StaticResource Mute}" FontSize="12" TextAlignment="Center" Margin="0,8,0,0" TextWrapping="Wrap"/>
+          <TextBlock x:Name="BandWarning" Foreground="#F59E0B" FontSize="12" TextWrapping="Wrap" Margin="0,8,0,0" Visibility="Collapsed"/>
+          <TextBlock x:Name="TuneText" FontSize="12" TextWrapping="Wrap" Margin="0,8,0,0" TextAlignment="Center"/>        </StackPanel>
+      </Border>
+
+      <Border Grid.Column="2" Style="{StaticResource CardBorder}">
+        <StackPanel>
+          <TextBlock Style="{StaticResource Label}" Text="STEP 2 · OPEN THE PAGE"/>
+          <Border Background="White" CornerRadius="12" Padding="6" Margin="0,12" HorizontalAlignment="Center">
+            <Grid Width="190" Height="190">
+              <Image x:Name="UrlQr" RenderOptions.BitmapScalingMode="NearestNeighbor"/>
+              <TextBlock x:Name="UrlQrPlaceholder" Text="Appears when the network is on." Foreground="#666" HorizontalAlignment="Center" VerticalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center"/>
+            </Grid>
+          </Border>
+          <TextBox x:Name="UrlText" IsReadOnly="True" Background="Transparent" BorderThickness="0" Foreground="#E8EAF0"
+                   FontWeight="SemiBold" TextAlignment="Center" TextWrapping="Wrap"/>
+          <TextBlock Text="Scan with the Camera again and tap the Safari link." Foreground="{StaticResource Mute}" FontSize="12" TextAlignment="Center" Margin="0,8,0,0" TextWrapping="Wrap"/>
+          <Button x:Name="WiredButton" Click="OnToggleWired" Margin="0,10,0,0" Visibility="Collapsed" FontSize="12"/>
+        </StackPanel>
+      </Border>
+
+      <Border Grid.Column="4" Style="{StaticResource CardBorder}">
+        <DockPanel>
+          <TextBlock DockPanel.Dock="Top" Style="{StaticResource Label}" Text="LIVE SPEED"/>
+          <Grid DockPanel.Dock="Bottom">
+            <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
+            <StackPanel>
+              <TextBlock Style="{StaticResource Label}" Text="↓ TO IPHONE"/>
+              <TextBlock x:Name="OutText" Text="0.0 MB/s" FontSize="18" FontWeight="SemiBold" Margin="0,4,0,0"/>
+            </StackPanel>
+            <StackPanel Grid.Column="1">
+              <TextBlock Style="{StaticResource Label}" Text="↑ TO PC"/>
+              <TextBlock x:Name="InText" Text="0.0 MB/s" FontSize="18" FontWeight="SemiBold" Margin="0,4,0,0"/>
+            </StackPanel>
+          </Grid>
+          <StackPanel VerticalAlignment="Center">
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+              <TextBlock x:Name="SpeedText" Text="0.0" FontSize="72" FontWeight="Black" Foreground="{StaticResource Accent}"/>
+              <TextBlock Text=" MB/s" FontSize="22" Foreground="{StaticResource Mute}" VerticalAlignment="Bottom" Margin="0,0,0,16"/>
+            </StackPanel>
+            <TextBlock x:Name="GbpsText" Text="= 0.00 Gbps" FontSize="18" FontWeight="SemiBold" Foreground="{StaticResource Mute}" HorizontalAlignment="Center" Margin="0,-6,0,6"/>
+            <TextBlock x:Name="SubSpeedText" Text="Peak 0.0 MB/s" Foreground="{StaticResource Mute}" HorizontalAlignment="Center"/>
+            <TextBlock x:Name="LinkText" Foreground="{StaticResource Mute}" FontSize="12" HorizontalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center" Margin="0,6,0,0"/>
+            <TextBlock x:Name="BenchText" Text="Speed test: tap “Run speed test” on the iPhone page" Foreground="{StaticResource Mute}" FontSize="12" HorizontalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center" Margin="0,4,0,0"/>
+          </StackPanel>
+        </DockPanel>
+      </Border>
+    </Grid>
+
+    <!-- Files + activity -->
+    <Grid Grid.Row="2">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="1.35*"/>
+        <ColumnDefinition Width="16"/>
+        <ColumnDefinition Width="*"/>
+      </Grid.ColumnDefinitions>
+
+      <Border Style="{StaticResource CardBorder}">
+        <DockPanel>
+          <DockPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+              <Button Style="{StaticResource Primary}" Content="Add files" Click="OnAddFiles"/>
+              <Button Content="Add folder" Click="OnAddFolder" Margin="8,0,0,0"/>
+              <Button Content="Clear" Click="OnClear" Margin="8,0,0,0"/>
+            </StackPanel>
+            <TextBlock x:Name="FilesLabel" Style="{StaticResource Label}" Text="FILES ON OFFER" VerticalAlignment="Center"/>
+          </DockPanel>
+          <DockPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
+            <Button DockPanel.Dock="Right" Content="Open folder" Click="OnOpenReceived"/>
+            <StackPanel VerticalAlignment="Center">
+              <TextBlock Style="{StaticResource Label}" Text="FILES FROM IPHONE ARE SAVED TO"/>
+              <TextBlock x:Name="ReceiveDirText" TextTrimming="CharacterEllipsis" Margin="0,2,0,0"/>
+            </StackPanel>
+          </DockPanel>
+          <Grid>
+            <Border x:Name="DropHint" BorderBrush="#2E3546" BorderThickness="2" CornerRadius="12" Background="#12151C">
+              <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                <TextBlock Text="Drop files or folders here" FontSize="18" FontWeight="SemiBold" HorizontalAlignment="Center"/>
+                <TextBlock Text="They appear on the iPhone page instantly. Any size." Foreground="{StaticResource Mute}" HorizontalAlignment="Center" Margin="0,4,0,0"/>
+              </StackPanel>
+            </Border>
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+              <ItemsControl x:Name="FilesList">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Border Padding="0,9" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
+                      <DockPanel>
+                        <Button DockPanel.Dock="Right" Content="✕" Tag="{Binding Id}" Click="OnRemoveFile" Padding="10,4" Background="Transparent"/>
+                        <TextBlock DockPanel.Dock="Right" Text="{Binding SizeText}" Foreground="{StaticResource Mute}" VerticalAlignment="Center" Margin="12,0"/>
+                        <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                      </DockPanel>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </ScrollViewer>
+          </Grid>
+        </DockPanel>
+      </Border>
+
+      <Border Grid.Column="2" Style="{StaticResource CardBorder}">
+        <DockPanel>
+          <TextBlock DockPanel.Dock="Top" Style="{StaticResource Label}" Text="ACTIVITY" Margin="0,0,0,12"/>
+          <Grid>
+            <TextBlock x:Name="ActivityEmpty" Text="Transfers show up here." Foreground="{StaticResource Mute}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+              <ItemsControl x:Name="ActivityList">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <StackPanel Margin="0,0,0,14">
+                      <TextBlock Text="{Binding Title}" TextTrimming="CharacterEllipsis" FontWeight="SemiBold"/>
+                      <ProgressBar Value="{Binding Percent, Mode=OneWay}" Maximum="100" Margin="0,6,0,4" Foreground="{Binding Accent}"/>
+                      <TextBlock Text="{Binding Detail}" Foreground="{StaticResource Mute}" FontSize="12"/>
+                    </StackPanel>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </ScrollViewer>
+          </Grid>
+        </DockPanel>
+      </Border>
+    </Grid>
+  </Grid>
+</Window>
