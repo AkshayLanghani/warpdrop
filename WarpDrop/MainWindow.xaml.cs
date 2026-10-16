@@ -333,3 +333,42 @@ public partial class MainWindow : Window
         }
     }
 
+    void SyncActivity()
+    {
+        var list = _server.TransfersSnapshot();
+        var ids = list.Select(t => t.Id).ToHashSet();
+        for (int i = _rows.Count - 1; i >= 0; i--)
+            if (!ids.Contains(_rows[i].Id)) _rows.RemoveAt(i);
+
+        for (int i = 0; i < list.Count; i++)
+        {
+            var t = list[i];
+            var row = _rows.FirstOrDefault(r => r.Id == t.Id);
+            if (row == null)
+            {
+                row = new TransferRow { Id = t.Id };
+                _rows.Insert(Math.Min(i, _rows.Count), row);
+            }
+            long done = Math.Min(Interlocked.Read(ref t.Done), t.Total);
+            double pct = t.Total == 0 ? 100 : done * 100.0 / t.Total;
+            row.Title = (t.ToPc ? "↑ iPhone → PC   " : "↓ PC → iPhone   ") + t.Name;
+            row.Percent = pct;
+            switch (t.State)
+            {
+                case 1:
+                    row.Detail = $"Done · {Fmt.Bytes(t.Total)} in {Fmt.Eta(t.Seconds)} · avg {Fmt.Rate(t.Total / t.Seconds)}";
+                    row.Accent = Green;
+                    break;
+                case 2:
+                    row.Detail = $"Stopped at {pct:0}% · {Fmt.Bytes(done)} of {Fmt.Bytes(t.Total)}";
+                    row.Accent = Red;
+                    break;
+                default:
+                    row.Detail = $"{pct:0.0}% · {Fmt.Rate(t.Speed)} · {Fmt.Bytes(done)} of {Fmt.Bytes(t.Total)} · {Fmt.Eta((t.Total - done) / t.Speed)} left";
+                    row.Accent = Accent;
+                    break;
+            }
+        }
+        ActivityEmpty.Visibility = _rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
