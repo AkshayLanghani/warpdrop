@@ -227,3 +227,45 @@ public partial class MainWindow : Window
         await Task.Run(() => WifiStation.Disconnect(st.Interface));
     }
 
+    // ---------- page QR (Wi-Fi or wired) ----------
+
+    string? _wifiIp, _wiredIp;
+    bool _showWired;
+
+    void ShowUrl(string ip)
+    {
+        string url = $"http://{ip}{(_server.Port == 80 ? "" : ":" + _server.Port)}/?k={_server.Token}";
+        UrlQr.Source = Qr.Render(url);
+        UrlQrPlaceholder.Visibility = Visibility.Collapsed;
+        UrlText.Text = url;
+    }
+
+    void ClearUrl()
+    {
+        UrlQr.Source = null;
+        UrlQrPlaceholder.Visibility = Visibility.Visible;
+        UrlText.Text = "";
+    }
+
+    void ShowCurrentUrl()
+    {
+        if (_showWired && _wiredIp != null) ShowUrl(_wiredIp);
+        else if ((_on || App.LanOnly) && _wifiIp != null) ShowUrl(_wifiIp);
+        else ClearUrl();
+    }
+
+    void OnToggleWired(object sender, RoutedEventArgs e)
+    {
+        _showWired = !_showWired && _wiredIp != null;
+        ShowCurrentUrl();
+        UpdateWiredButton(Hotspot.FindWiredLink());
+    }
+
+    void UpdateWiredButton((string Ip, long Bps)? wired)
+    {
+        _wiredIp = wired?.Ip;
+        if (wired == null && _showWired) { _showWired = false; ShowCurrentUrl(); }
+        WiredButton.Visibility = wired == null ? Visibility.Collapsed : Visibility.Visible;
+        WiredButton.Content = _showWired ? "Back to Wi-Fi QR" : $"⚡ Wired link {wired?.Bps / 1e9:0.#} Gbps found: show its QR";
+    }
+
