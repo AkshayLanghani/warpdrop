@@ -269,3 +269,22 @@ public partial class MainWindow : Window
         WiredButton.Content = _showWired ? "Back to Wi-Fi QR" : $"⚡ Wired link {wired?.Bps / 1e9:0.#} Gbps found: show its QR";
     }
 
+    async Task CheckBandAsync(bool fiveRequested)
+    {
+        var st = await Task.Run(WifiStation.Query);
+        string? band = st is { Connected: true } ? st.Band : null;
+        BandWarning.Visibility = Visibility.Collapsed;
+        if (!fiveRequested)
+        {
+            BandWarning.Text = "⚠ This adapter/driver refused a 5 GHz hotspot; Windows picked the band. Expect much lower speed.";
+            BandWarning.Visibility = Visibility.Visible;
+        }
+        else if (!_dedicated && band != null && !band.StartsWith('5'))
+        {
+            // One radio serves both the laptop's own Wi-Fi and the hotspot. Different bands = time-slicing.
+            BandWarning.Text = $"⚠ Laptop Wi-Fi is connected on {band} but the hotspot is 5 GHz, so the radio has to time-share (≈ half speed). " +
+                               "Connect the laptop to a 5 GHz network, use Ethernet for internet, or disconnect its Wi-Fi.";
+            BandWarning.Visibility = Visibility.Visible;
+        }
+    }
+
