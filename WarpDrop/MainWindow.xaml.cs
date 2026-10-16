@@ -288,3 +288,48 @@ public partial class MainWindow : Window
         }
     }
 
+    void Tick()
+    {
+        _ticks++;
+        double outR = _server.RateOut, inR = _server.RateIn, total = outR + inR;
+        _peak = Math.Max(_peak, total);
+        SpeedText.Text = (total / 1_000_000).ToString("0.0");
+        GbpsText.Text = $"= {total * 8 / 1e9:0.00} Gbps";
+        GbpsText.Foreground = total * 8 >= 1e9 ? Green : (Brush)FindResource("Mute");
+        OutText.Text = Fmt.Rate(outR);
+        InText.Text = Fmt.Rate(inR);
+
+        int clients = _on ? _hotspot.ClientCount : 0;
+        SubSpeedText.Text = $"Peak {Fmt.Rate(_peak)} ({_peak * 8 / 1e9:0.00} Gbps)" + (_on ? $" · {clients} device{(clients == 1 ? "" : "s")}" : "");
+
+        if (_ticks % 5 == 0)
+        {
+            long link = _on ? Hotspot.HotspotLinkBps() : 0;
+            LinkText.Text = link > 0 ? $"Hotspot link rate: {link / 1e6:0} Mbps (radio max; real transfers reach ~65–80% of this)" : "";
+            UpdateWiredButton(Hotspot.FindWiredLink());
+            if (_on && (total > 0 || _ticks % 25 == 0))
+                Diag.Log($"tick link={link / 1_000_000}Mbps devices={clients} out={outR / 1e6:0.0}MB/s in={inR / 1e6:0.0}MB/s hotspotOn={_hotspot.IsOn}");
+        }
+        if (_server.LastBench is { } b)
+        {
+            BenchText.Text = $"Speed test: ↓ {b.Down1:0} Mbps (1 stream) · ↓ {b.Down4:0} Mbps (4) · ↑ {b.Up:0} Mbps";
+            BenchText.Foreground = Math.Min(b.Down1, b.Up) >= 1000 ? Green : Amber;
+        }
+
+        SyncActivity();
+
+        // Watchdog: Windows turns an idle hotspot off after a few minutes.
+        if (_on && _dedicated && _ticks % 15 == 0) _ = EnforceDedicatedAsync();
+        if (_on && _ticks % 25 == 0 && !_restarting && !_busy && !_hotspot.IsOn)
+        {
+            _restarting = true;
+            SetStatus("Re-enabling the WarpDrop network…", Amber);
+            _ = _hotspot.RestartAsync().ContinueWith(_ => Dispatcher.Invoke(() =>
+            {
+                _restarting = false;
+                if (!_on) return;
+                SetStatus(_hotspot.IsOn ? "ON · network restored" : "Network dropped: retrying", _hotspot.IsOn ? Green : Red);
+            }));
+        }
+    }
+
