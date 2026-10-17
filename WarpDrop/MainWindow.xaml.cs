@@ -440,3 +440,44 @@ public partial class MainWindow : Window
             foreach (var p in paths) AddPath(p);
     }
 
+    // ---------- chrome ----------
+
+    void SetStatus(string text, Brush dot)
+    {
+        StatusText.Text = text;
+        StatusDot.Fill = dot;
+    }
+
+    protected override async void OnClosing(CancelEventArgs e)
+    {
+        if (_cleaned) return;
+        e.Cancel = true;
+        if (_closing) return;
+        _closing = true;
+        _timer.Stop();
+        _server.Dispose();
+        NetSwitch.IsEnabled = false;
+        if (_on || _busy)
+        {
+            try { await TurnOffAsync().WaitAsync(TimeSpan.FromSeconds(75)); } catch { }
+        }
+        _cleaned = true;
+        Close();
+    }
+
+    [DllImport("dwmapi.dll")]
+    static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+
+    void UseDarkTitleBar()
+    {
+        int on = 1;
+        try { DwmSetWindowAttribute(new WindowInteropHelper(this).Handle, 20, ref on, sizeof(int)); } catch { }
+    }
+
+    static Brush Frozen(string hex)
+    {
+        var b = (Brush)new BrushConverter().ConvertFromString(hex)!;
+        b.Freeze();
+        return b;
+    }
+}
