@@ -372,3 +372,71 @@ public partial class MainWindow : Window
         ActivityEmpty.Visibility = _rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
+    // ---------- file list ----------
+
+    void AddPath(string path)
+    {
+        if (Directory.Exists(path))
+        {
+            IEnumerable<string> files;
+            try { files = Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories).ToList(); }
+            catch { return; }
+            foreach (var f in files) AddPath(f);
+            return;
+        }
+        if (_server.Library.Add(path) is { } shared) _files.Add(shared);
+        RefreshFilesLabel();
+    }
+
+    void RefreshFilesLabel()
+    {
+        long total = _files.Sum(f => f.Size);
+        FilesLabel.Text = _files.Count == 0 ? "FILES ON OFFER" : $"FILES ON OFFER · {_files.Count} · {Fmt.Bytes(total)}";
+        DropHint.Visibility = _files.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    void OnAddFiles(object sender, RoutedEventArgs e)
+    {
+        var dlg = new OpenFileDialog { Multiselect = true, Title = "Choose files to send to the iPhone" };
+        if (dlg.ShowDialog(this) == true) foreach (var f in dlg.FileNames) AddPath(f);
+    }
+
+    void OnAddFolder(object sender, RoutedEventArgs e)
+    {
+        var dlg = new OpenFolderDialog { Multiselect = true, Title = "Choose folders to send to the iPhone" };
+        if (dlg.ShowDialog(this) == true) foreach (var f in dlg.FolderNames) AddPath(f);
+    }
+
+    void OnClear(object sender, RoutedEventArgs e)
+    {
+        _server.Library.Clear();
+        _files.Clear();
+        RefreshFilesLabel();
+    }
+
+    void OnRemoveFile(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: int id }) return;
+        _server.Library.Remove(id);
+        if (_files.FirstOrDefault(f => f.Id == id) is { } f) _files.Remove(f);
+        RefreshFilesLabel();
+    }
+
+    void OnOpenReceived(object sender, RoutedEventArgs e)
+    {
+        Directory.CreateDirectory(_settings.ReceiveDir);
+        Process.Start(new ProcessStartInfo("explorer.exe", $"\"{_settings.ReceiveDir}\"") { UseShellExecute = true });
+    }
+
+    void OnDragOver(object sender, DragEventArgs e)
+    {
+        e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    void OnDrop(object sender, DragEventArgs e)
+    {
+        if (e.Data.GetData(DataFormats.FileDrop) is string[] paths)
+            foreach (var p in paths) AddPath(p);
+    }
+
