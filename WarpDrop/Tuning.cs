@@ -272,3 +272,38 @@ Log 'REVERTED'
     }
 }
 
+/// <summary>Per-session boosts that need no admin, undone when the network switches off.</summary>
+public static class PerfBoost
+{
+    static readonly Guid BestPerformance = new("ded574b5-45a0-4f42-8737-46345c09c238");
+    static Guid? _previousOverlay;
+
+    [DllImport("powrprof.dll")] static extern uint PowerGetEffectiveOverlayScheme(out Guid overlay);
+    [DllImport("powrprof.dll")] static extern uint PowerSetActiveOverlayScheme(Guid overlay);
+    [DllImport("kernel32.dll")] static extern uint SetThreadExecutionState(uint flags);
+    const uint EsContinuous = 0x80000000, EsSystemRequired = 0x1;
+
+    public static void Enable()
+    {
+        try { Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.High; } catch { }
+        SetThreadExecutionState(EsContinuous | EsSystemRequired); // no sleep mid-transfer
+        try
+        {
+            // Windows "Best performance" power mode: no CPU throttling while the network is on.
+            if (PowerGetEffectiveOverlayScheme(out var current) == 0 && current != BestPerformance)
+            {
+                _previousOverlay = current;
+                PowerSetActiveOverlayScheme(BestPerformance);
+            }
+        }
+        catch { }
+    }
+
+    public static void Disable()
+    {
+        try { Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.Normal; } catch { }
+        SetThreadExecutionState(EsContinuous);
+        try { if (_previousOverlay is { } g) PowerSetActiveOverlayScheme(g); } catch { }
+        _previousOverlay = null;
+    }
+}
