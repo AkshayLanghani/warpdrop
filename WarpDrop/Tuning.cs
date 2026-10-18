@@ -182,3 +182,93 @@ Remove-Item $stop
 Log 'REVERTED'
 """;
 
+    /// <summary>Starts the guardian (UAC prompt) and waits until the boosted settings are live.</summary>
+    public async Task<Result> StartAsync(WifiStation.Info? station)
+    {
+        Directory.CreateDirectory(Dir);
+        File.Delete(LogFile);
+        File.Delete(StopFile);
+        string args = $"-Mode Session -AppPid {Environment.ProcessId} -Exe \"{Environment.ProcessPath}\" -Dir \"{Dir}\"";
+        if (station is { Profile: { } profile }) args += $" -Iface \"{station.Interface}\" -WifiProfile \"{profile}\"";
+        try { _proc = Launch(args); }
+        catch (Win32Exception) { return new(false, false, Array.Empty<string>(), "Admin prompt declined: running without driver/power boost"); }
+
+        for (int i = 0; i < 240; i++)
+        {
+            await Task.Delay(250);
+            var lines = ReadLog();
+            if (lines.Contains("APPLIED"))
+                return new(true, lines.Contains("ADAPTER_RESTARTED"),
+                    lines.Where(l => l is not ("APPLIED" or "ADAPTER_RESTARTED")).ToList(), null);
+            if (_proc.HasExited) break;
+        }
+        return new(false, false, Array.Empty<string>(), "Boost helper didn't respond: running without driver/power boost");
+    }
+
+    public bool Running => _proc is { HasExited: false };
+
+    /// <summary>Asks the guardian to turn Wi-Fi auto-configuration back on (fallback if the hotspot needs it).</summary>
+    public async Task<bool> ResumeAutoConfigAsync()
+    {
+        if (!Running) return false;
+        File.WriteAllText(Path.Combine(Dir, "autoconfig.on"), "on");
+        for (int i = 0; i < 40; i++)
+        {
+            await Task.Delay(250);
+            if (ReadLog().Contains("AUTOCONFIG_ON")) return true;
+        }
+        return false;
+    }
+
+    /// <summary>Signals the guardian to restore everything, and waits for it to finish.</summary>
+    public async Task StopAsync()
+    {
+        if (_proc == null) return;
+        try
+        {
+            File.WriteAllText(StopFile, "stop");
+            await _proc.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(45));
+        }
+        catch { }
+        _proc = null;
+    }
+
+    /// <summary>Emergency undo (<c>--restore-system</c>) from a leftover snapshot.</summary>
+    public static async Task<bool> RestoreAsync()
+    {
+        Directory.CreateDirectory(Dir);
+        File.Delete(LogFile);
+        try
+        {
+            using var p = Launch($"-Mode Restore -Dir \"{Dir}\"");
+            await p.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(60));
+        }
+        catch { return false; }
+        return ReadLog().Contains("REVERTED");
+    }
+
+    static Process Launch(string args)
+    {
+        string script = Path.Combine(Dir, "guardian.ps1");
+        File.WriteAllText(script, Script, new UTF8Encoding(true));
+        return Process.Start(new ProcessStartInfo("powershell.exe",
+            $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{script}\" {args}")
+        {
+            UseShellExecute = true,
+            Verb = "runas",
+            WindowStyle = ProcessWindowStyle.Hidden,
+        })!;
+    }
+
+    static List<string> ReadLog()
+    {
+        try
+        {
+            using var fs = new FileStream(LogFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var sr = new StreamReader(fs, Encoding.UTF8);
+            return sr.ReadToEnd().Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
+        }
+        catch { return new List<string>(); }
+    }
+}
+
