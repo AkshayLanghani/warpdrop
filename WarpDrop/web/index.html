@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0e1014">
+<title>WarpDrop</title>
+<style>
+:root{--bg:#0e1014;--card:#171a22;--line:#262b38;--fg:#e8eaf0;--mute:#8b93a7;--acc:#4f8cff;--acc2:#22d3ee;--ok:#34d399;--bad:#f87171}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+[hidden]{display:none!important}
+html{background:var(--bg)}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.4 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;
+  padding:env(safe-area-inset-top) 16px calc(28px + env(safe-area-inset-bottom));max-width:640px;margin:0 auto}
+header{display:flex;align-items:center;justify-content:space-between;padding:18px 0 14px}
+.logo{font-weight:900;font-size:24px;letter-spacing:-.02em}
+.logo span,.num{background:linear-gradient(90deg,var(--acc),var(--acc2));-webkit-background-clip:text;background-clip:text;color:transparent}
+.pc{color:var(--mute);font-size:13px;display:flex;align-items:center;gap:6px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--ok)}
+.dot.off{background:var(--bad)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:16px;margin-bottom:14px}
+.speed{display:flex;align-items:flex-end;justify-content:space-between;gap:12px}
+.num{font-size:52px;font-weight:900;line-height:1;font-variant-numeric:tabular-nums}
+.unit{color:var(--mute);font-size:15px;margin-top:4px}
+.dirs{text-align:right;color:var(--mute);font-size:13px;line-height:1.7}
+.dirs b{color:var(--fg);font-variant-numeric:tabular-nums}
+h2{font-size:12px;text-transform:uppercase;letter-spacing:.09em;color:var(--mute);margin:0 0 6px;display:flex;justify-content:space-between;align-items:center;min-height:34px}
+.row{display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line)}
+.row:first-child{border-top:0}
+.meta{flex:1;min-width:0}
+.name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600}
+.sub{color:var(--mute);font-size:13px;font-variant-numeric:tabular-nums}
+.btn{appearance:none;border:0;border-radius:12px;padding:10px 16px;font:700 15px/1.2 inherit;background:linear-gradient(90deg,var(--acc),var(--acc2));color:#fff;text-decoration:none;display:inline-block;text-align:center;cursor:pointer}
+.btn.ghost{background:#232835;color:var(--fg)}
+.btn.sm{padding:7px 12px;font-size:13px}
+.btn.big{display:block;width:100%;padding:16px;font-size:17px}
+.vh{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden}
+.bar{height:6px;background:#232835;border-radius:3px;overflow:hidden;margin-top:8px}
+.bar>i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--acc),var(--acc2));transition:width .25s}
+.bar.ok>i{background:var(--ok)} .bar.err>i{background:var(--bad)}
+.empty{color:var(--mute);text-align:center;padding:20px 0;font-size:14px}
+.btn:disabled{opacity:.5}
+.mbps{font-weight:800;font-size:20px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.mbps.ok{color:var(--ok)} .mbps.low{color:#f59e0b}
+.verdict{margin-top:10px;font-size:14px}
+.foot{color:var(--mute);font-size:12px;text-align:center;margin:18px 0 0}
+#bad{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;text-align:center;padding:32px}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">Warp<span>Drop</span></div>
+  <div class="pc"><i class="dot off" id="dot"></i><span id="pc">Connecting…</span></div>
+</header>
+
+<section class="card speed">
+  <div><div class="num" id="spd">0.0</div><div class="unit">MB/s live</div></div>
+  <div class="dirs">↓ to iPhone <b id="sOut">0.0</b><br>↑ to PC <b id="sIn">0.0</b></div>
+</section>
+
+<section class="card">
+  <h2>Speed test <button class="btn ghost sm" id="benchBtn">Run speed test</button></h2>
+  <div id="bench"><div class="sub">Measures this iPhone ↔ PC link with no disk involved. Target: 1000 Mbps.</div></div>
+</section>
+
+<section class="card">
+  <h2>From your PC <button class="btn ghost sm" id="all" hidden>Download all</button></h2>
+  <div id="files"><div class="empty">Drag files onto the WarpDrop window on your PC.<br>They'll show up here instantly.</div></div>
+</section>
+
+<section class="card">
+  <h2>Send to PC</h2>
+  <label class="btn big">Choose photos &amp; files<input type="file" id="pick" class="vh" multiple></label>
+  <div id="ups"></div>
+</section>
+
+<p class="foot">Downloads land in <b>Files › Downloads</b>. Keep this page open with the screen on for top speed.</p>
+
+<div id="bad" hidden><div><div class="logo">Warp<span>Drop</span></div><p class="sub">This link has expired. Scan the step 2 QR code on your PC again.</p></div></div>
+
+<script>
+const K = new URLSearchParams(location.search).get('k') || '';
+const $ = s => document.querySelector(s);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const MB = 1e6;
+const fmt = b => { const u = ['B','KB','MB','GB','TB']; let i = 0; while (b >= 1024 && i < 4) { b /= 1024; i++; } return i ? b.toFixed(1) + ' ' + u[i] : b + ' B'; };
+const eta = s => { if (!isFinite(s) || s < 0) return '--'; s = Math.round(s); const h = s / 3600 | 0, m = (s % 3600) / 60 | 0, x = s % 60; return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(x).padStart(2, '0'); };
+const link = f => `/f/${f.id}/${encodeURIComponent(f.name)}?k=${encodeURIComponent(K)}`;
+const api = p => p + (p.includes('?') ? '&' : '?') + 'k=' + encodeURIComponent(K);
+
+// ---------- live state ----------
+let files = [], filesKey = '';
+async function poll() {
+  try {
+    const r = await fetch(api('/api/state'), { cache: 'no-store' });
+    if (r.status === 403) { $('#bad').hidden = false; return; }
+    const s = await r.json();
+    $('#pc').textContent = s.pc; $('#dot').classList.remove('off');
+    $('#spd').textContent = (Math.max(s.rateOut, s.rateIn, localRate) / MB).toFixed(1);
+    $('#sOut').textContent = (s.rateOut / MB).toFixed(1) + ' MB/s';
+    $('#sIn').textContent = (s.rateIn / MB).toFixed(1) + ' MB/s';
+    const key = s.files.map(f => f.id).join(',');
+    if (key !== filesKey) { filesKey = key; files = s.files; renderFiles(); }
+  } catch { $('#pc').textContent = 'Reconnecting…'; $('#dot').classList.add('off'); }
+}
+setInterval(poll, 1000); poll();
+
+function renderFiles() {
+  const box = $('#files');
+  $('#all').hidden = files.length < 2;
+  if (!files.length) { box.innerHTML = '<div class="empty">Drag files onto the WarpDrop window on your PC.<br>They\'ll show up here instantly.</div>'; return; }
+  box.replaceChildren(...files.map(f => {
+    const row = document.createElement('div'); row.className = 'row';
+    const meta = document.createElement('div'); meta.className = 'meta';
+    const n = document.createElement('div'); n.className = 'name'; n.textContent = f.name;
+    const s = document.createElement('div'); s.className = 'sub'; s.textContent = fmt(f.size);
+    meta.append(n, s);
+    const a = document.createElement('a'); a.className = 'btn sm'; a.textContent = 'Download';
+    a.href = link(f); a.download = f.name;
+    row.append(meta, a);
+    return row;
+  }));
+}
+
+$('#all').onclick = async () => {
+  for (const f of files) {
+    const a = document.createElement('a'); a.href = link(f); a.download = f.name;
+    document.body.appendChild(a); a.click(); a.remove();
+    await sleep(1200);
+  }
+};
+
