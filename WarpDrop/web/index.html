@@ -305,3 +305,57 @@ async function upload(file, ui) {
   ui.finish(file.size, performance.now() - t0);
 }
 
+const upStatus = id => fetch(api(`/api/up/${id}/status`), { cache: 'no-store' }).then(x => x.json()).catch(() => null);
+async function uploadParallel(id, file, prog) {
+  const k = Math.min(PARALLEL, Math.floor(file.size / LANE_MIN)), share = Math.ceil(file.size / k);
+  const lanes = Array.from({ length: k }, (_, i) => ({ s: i * share, e: Math.min(file.size, (i + 1) * share), sent: 0 }));
+  const ctl = { xhrs: new Set(), failed: null };
+  const sumTimer = setInterval(() => { prog.done = lanes.reduce((a, l) => a + l.sent, 0); }, 250);
+  // Watch the 5-second speed. If it sags below 65% of its best for 6 s in a row, hand the rest of
+  // the file to the read-ahead engine (on iOS the file-streaming path can slow down mid-upload).
+  const t0 = performance.now(), hist = []; let best = 0, slow = 0;
+  const mon = setInterval(() => {
+    const now = performance.now(), d = lanes.reduce((a, l) => a + l.sent, 0);
+    hist.push([now, d]);
+    while (now - hist[0][0] > 5000) hist.shift();
+    if (now - t0 < 6000 || hist.length < 2) return;
+    const rate = (d - hist[0][1]) / ((now - hist[0][0]) / 1000);
+    best = Math.max(best, rate);
+    slow = rate < 0.65 * best ? slow + 1 : 0;
+    if (slow >= 6 && !ctl.failed && file.size - d > 200 * MB) {
+      const e = new Error(`lanes slowed from ${(best / MB).toFixed(0)} to ${(rate / MB).toFixed(0)} MB/s at ${(d / MB).toFixed(0)} MB`);
+      e.engineSwitch = true;
+      e.slowRate = rate;
+      ctl.failed = e;
+      ctl.xhrs.forEach(x => x.abort());
+    }
+  }, 1000);
+  const run = async lane => {
+    let from = lane.s;
+    for (let attempt = 0; from < lane.e && !ctl.failed; attempt++) {
+      const base = from - lane.s;
+      try { await put(id, from, file.slice(from, lane.e), b => { lane.sent = base + b; }, ctl); }
+      catch (err) {
+        if (ctl.failed) return;
+        report(`upload '${file.name}': lane at ${(lane.s / MB).toFixed(0)} MB dropped near ${((lane.s + lane.sent) / MB).toFixed(0)} MB, try ${attempt + 1}: ${err.message}`);
+        if (attempt >= 3) throw err;
+        await sleep(800 * (attempt + 1));
+      }
+      // Resume this lane exactly where the PC's data for it ends.
+      const st = await upStatus(id);
+      const hit = st?.ranges?.find(([rs, re]) => rs <= lane.s && re > lane.s);
+      from = hit ? Math.min(lane.e, hit[1]) : lane.s;
+      lane.sent = from - lane.s;
+    }
+  };
+  await Promise.allSettled(lanes.map(lane => run(lane).catch(err => {
+    ctl.failed = ctl.failed || err;
+    ctl.xhrs.forEach(x => x.abort()); // stop the other lanes before safe mode takes over
+    throw err;
+  })));
+  clearInterval(sumTimer);
+  clearInterval(mon);
+  if (ctl.failed) throw ctl.failed;
+  prog.done = file.size;
+}
+
