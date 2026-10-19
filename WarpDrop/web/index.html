@@ -130,3 +130,99 @@ $('#all').onclick = async () => {
   }
 };
 
+// ---------- speed test: pure network, measured after a 1 s warm-up ----------
+const TARGET = 1000;
+function benchRow(label) {
+  const row = document.createElement('div'); row.className = 'row';
+  row.innerHTML = '<div class="meta"><div class="name"></div><div class="sub"></div></div><div class="mbps">…</div>';
+  row.querySelector('.name').textContent = label;
+  $('#bench').append(row);
+  const v = row.querySelector('.mbps');
+  return {
+    live: m => { v.textContent = m.toFixed(0) + ' Mbps'; },
+    done: (m, note) => { v.textContent = m.toFixed(0) + ' Mbps'; v.classList.add(m >= TARGET ? 'ok' : 'low'); row.querySelector('.sub').textContent = note; },
+  };
+}
+
+function meter(secs, live) {
+  const t0 = performance.now(), warm = t0 + 1000, end = warm + secs * 1000;
+  const m = { bytes: 0, base: 0, tBase: 0, end, measuring: false };
+  m.iv = setInterval(() => {
+    const now = performance.now();
+    if (!m.measuring && now >= warm) { m.measuring = true; m.base = m.bytes; m.tBase = now; }
+    if (m.measuring && now > m.tBase) live((m.bytes - m.base) * 8 / ((now - m.tBase) / 1000) / 1e6);
+  }, 250);
+  // MB/s for every second, to see whether a link holds its speed or sags after a few seconds.
+  m.series = []; let lastB = 0;
+  m.sec = setInterval(() => { m.series.push(((m.bytes - lastB) / MB).toFixed(0)); lastB = m.bytes; }, 1000);
+  m.result = () => { clearInterval(m.iv); clearInterval(m.sec); const now = performance.now(); return m.measuring ? (m.bytes - m.base) * 8 / ((now - m.tBase) / 1000) / 1e6 : 0; };
+  return m;
+}
+
+async function benchDown(streams, secs, live) {
+  const m = meter(secs, live), ctrl = new AbortController();
+  const one = async () => {
+    while (performance.now() < m.end) {
+      const r = await fetch(api('/api/bench/down?bytes=4294967296'), { cache: 'no-store', signal: ctrl.signal });
+      const rd = r.body.getReader();
+      for (;;) {
+        const { done, value } = await rd.read();
+        if (done) break;
+        m.bytes += value.byteLength;
+        if (performance.now() >= m.end) { ctrl.abort(); return; }
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: streams }, () => one().catch(() => {})));
+  const res = m.result();
+  report(`speed test download x${streams}: ${res.toFixed(0)} Mbps, MB/s per second: ${m.series.join(' ')}`);
+  return res;
+}
+
+let benchBlob;
+async function benchUp(streams, secs, live) {
+  if (!benchBlob) {
+    const a = new Uint8Array(16 << 20);
+    for (let i = 0; i < a.length; i += 65536) crypto.getRandomValues(a.subarray(i, i + 65536));
+    benchBlob = new Blob([a]);
+  }
+  const m = meter(secs, live), xhrs = [];
+  const one = () => new Promise(resolve => {
+    const loop = () => {
+      if (performance.now() >= m.end) return resolve();
+      const x = new XMLHttpRequest(); let last = 0; xhrs.push(x);
+      x.open('PUT', api('/api/bench/up'));
+      x.upload.onprogress = e => { m.bytes += e.loaded - last; last = e.loaded; };
+      x.onload = () => { m.bytes += benchBlob.size - last; loop(); };
+      x.onerror = x.onabort = () => resolve();
+      x.send(benchBlob);
+    };
+    loop();
+  });
+  const stop = setTimeout(() => xhrs.forEach(x => x.abort()), m.end - performance.now() + 50);
+  await Promise.all(Array.from({ length: streams }, one));
+  clearTimeout(stop);
+  const res = m.result();
+  report(`speed test upload x${streams} (from memory, no file): ${res.toFixed(0)} Mbps, MB/s per second: ${m.series.join(' ')}`);
+  return res;
+}
+
+$('#benchBtn').onclick = async () => {
+  const btn = $('#benchBtn'); btn.disabled = true; btn.textContent = 'Testing…';
+  $('#bench').innerHTML = '';
+  try {
+    let r = benchRow('Download · 1 stream');
+    const d1 = await benchDown(1, 8, r.live); r.done(d1, 'What the Download buttons get');
+    r = benchRow('Download · 4 streams');
+    const d4 = await benchDown(4, 8, r.live); r.done(d4, 'Raw capacity of the Wi-Fi link');
+    r = benchRow('Upload · 4 streams · 20 s');
+    const up = await benchUp(4, 20, r.live); r.done(up, 'Sustained iPhone → PC capacity');
+    fetch(api(`/api/bench/result?down1=${d1.toFixed(0)}&down4=${d4.toFixed(0)}&up=${up.toFixed(0)}`), { method: 'POST' }).catch(() => {});
+    const v = document.createElement('div'); v.className = 'verdict';
+    const worst = Math.min(d1, up);
+    v.textContent = worst >= TARGET ? `✓ Over 1 Gbps both ways (${(worst / 1000).toFixed(2)} Gbps worst case).`
+      : `Below 1 Gbps: the Wi-Fi link is the limit, not WarpDrop. Hold the iPhone near the laptop, and check the PC window for warnings.`;
+    $('#bench').append(v);
+  } finally { btn.disabled = false; btn.textContent = 'Run again'; }
+};
+
