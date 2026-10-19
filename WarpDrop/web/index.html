@@ -226,3 +226,82 @@ $('#benchBtn').onclick = async () => {
   } finally { btn.disabled = false; btn.textContent = 'Run again'; }
 };
 
+// ---------- uploads ----------
+// Turbo: the file is split into up to 4 lanes, each one long continuous upload of its share.
+// A single TCP stream halves its speed on every loss on a crowded channel; 4 streams hold full
+// speed. One long request per lane (no rounds of small pieces) is what iOS handles reliably.
+// Safe mode fallback: one continuous resumable stream.
+const FILES_AT_ONCE = 2, STALL_MS = 20000, MAX_RESUMES = 8, LANE_MIN = 32 * 1024 * 1024, PARALLEL = 4;
+const report = msg => fetch(api('/api/log?msg=' + encodeURIComponent(msg)), { method: 'POST' }).catch(() => {});
+const queue = []; let active = 0, wake = null, localRate = 0, lastBytes = 0, sent = 0;
+setInterval(() => { localRate = (sent - lastBytes) * 2; lastBytes = sent; }, 500);
+
+$('#pick').onchange = e => { for (const f of e.target.files) queue.push({ f, ui: makeRow(f) }); e.target.value = ''; pump(); };
+addEventListener('beforeunload', e => { if (active) { e.preventDefault(); e.returnValue = ''; } });
+
+function pump() {
+  while (active < FILES_AT_ONCE && queue.length) {
+    const job = queue.shift(); active++; keepAwake(true);
+    upload(job.f, job.ui).catch(err => job.ui.fail(err)).finally(() => { active--; if (!active && !queue.length) keepAwake(false); pump(); });
+  }
+}
+
+async function keepAwake(on) {
+  try {
+    if (on && !wake && navigator.wakeLock) wake = await navigator.wakeLock.request('screen');
+    if (!on && wake) { await wake.release(); wake = null; }
+  } catch {}
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && active) { wake = null; keepAwake(true); } });
+
+function makeRow(f) {
+  const row = document.createElement('div'); row.className = 'row';
+  row.innerHTML = '<div class="meta"><div class="name"></div><div class="sub">Waiting…</div><div class="bar"><i></i></div></div>';
+  row.querySelector('.name').textContent = f.name;
+  $('#ups').prepend(row);
+  const sub = row.querySelector('.sub'), bar = row.querySelector('.bar'), fill = bar.querySelector('i');
+  let lastT = 0, lastB = 0, rate = 0;
+  return {
+    update(done, total) {
+      const now = performance.now();
+      if (lastT) rate = rate * 0.5 + ((done - lastB) / ((now - lastT) / 1000)) * 0.5;
+      lastT = now; lastB = done;
+      fill.style.width = (total ? done / total * 100 : 100) + '%';
+      sub.textContent = `${(total ? done / total * 100 : 100).toFixed(0)}% · ${(rate / MB).toFixed(1)} MB/s · ${eta((total - done) / rate)} left`;
+    },
+    note(text) { sub.textContent = text; },
+    finish(total, ms) { fill.style.width = '100%'; bar.classList.add('ok'); sub.textContent = `Sent ${fmt(total)} · avg ${(total / MB / (ms / 1000)).toFixed(1)} MB/s`; },
+    fail(err) { bar.classList.add('err'); sub.textContent = 'Failed: ' + (err && err.message || err) + ' — pick the file again to retry'; },
+  };
+}
+
+async function upload(file, ui) {
+  const t0 = performance.now();
+  const r = await fetch(api(`/api/up/init?name=${encodeURIComponent(file.name)}&size=${file.size}`), { method: 'POST' });
+  if (!r.ok) throw new Error('PC refused (' + r.status + ')');
+  const { id } = await r.json();
+  const prog = { done: 0, prev: 0 };
+  const timer = setInterval(() => { sent += prog.done - prog.prev; prog.prev = prog.done; ui.update(prog.done, file.size); }, 300);
+  try {
+    if (file.size >= 2 * LANE_MIN) {
+      try { await uploadParallel(id, file, prog); }
+      catch (err) {
+        report(`upload '${file.name}': ${err.message}; ${err.engineSwitch ? 'switching to read-ahead engine' : 'switching to safe mode'}`);
+        if (err.engineSwitch) {
+          ui.note('Speed dipped: switching engines…');
+          try { await uploadPipeline(id, file, prog, err.slowRate); }
+          catch (e2) { report(`upload '${file.name}': read-ahead engine stopped (${e2.message}); switching to safe mode`); ui.note('Switching to safe mode…'); }
+        } else ui.note('Switching to safe mode…');
+      }
+    }
+    await uploadStream(id, file, prog, ui);
+  } catch (e) {
+    fetch(api(`/api/up/${id}/cancel`), { method: 'POST' }).catch(() => {});
+    throw e;
+  } finally { clearInterval(timer); }
+
+  const d = await fetch(api(`/api/up/${id}/done`), { method: 'POST' });
+  if (!d.ok) throw new Error('PC could not save (' + d.status + ')');
+  ui.finish(file.size, performance.now() - t0);
+}
+
