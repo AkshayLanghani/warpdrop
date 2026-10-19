@@ -359,3 +359,61 @@ async function uploadParallel(id, file, prog) {
   prog.done = file.size;
 }
 
+// Read-ahead engine: one reader pulls 8 MB blocks of whatever the PC is still missing into memory,
+// up to 6 blocks ahead, while 4 senders upload ready blocks (the same in-memory path the speed
+// test uses). Logs how fast the file read and how fast it sent, so the bottleneck is visible.
+const PIPE_CHUNK = 8 * 1024 * 1024, PIPE_AHEAD = 6;
+async function uploadPipeline(id, file, prog, mustBeat) {
+  const ranges = (await upStatus(id))?.ranges ?? [];
+  const gaps = []; let pos = 0;
+  for (const [s, e] of ranges) { if (s > pos) gaps.push([pos, s]); pos = Math.max(pos, e); }
+  if (pos < file.size) gaps.push([pos, file.size]);
+  const have = file.size - gaps.reduce((a, [s, e]) => a + e - s, 0);
+  const jobs = [];
+  for (const [s, e] of gaps) for (let o = s; o < e; o += PIPE_CHUNK) jobs.push([o, Math.min(e, o + PIPE_CHUNK)]);
+
+  const ready = [], inflight = new Map(), ctl = { xhrs: new Set() };
+  let readDone = false, failed = null, readMs = 0, readBytes = 0, sentBytes = 0;
+  const t0 = performance.now();
+  const tm = setInterval(() => {
+    let f = 0; inflight.forEach(v => { f += v; });
+    prog.done = have + sentBytes + f;
+    // Only worth it if it beats the speed the lanes had sagged to; otherwise single-stream safe mode.
+    const secs = (performance.now() - t0) / 1000, rate = (sentBytes + f) / secs;
+    if (mustBeat && secs > 8 && rate < 0.9 * mustBeat && !failed && file.size - prog.done > 200 * MB) {
+      failed = new Error(`read-ahead ran ${(rate / MB).toFixed(0)} MB/s, no better than lanes`);
+      ctl.xhrs.forEach(x => x.abort());
+    }
+  }, 250);
+  const reader = (async () => {
+    for (const [s, e] of jobs) {
+      while (ready.length >= PIPE_AHEAD && !failed) await sleep(4);
+      if (failed) return;
+      const t = performance.now();
+      const buf = await Promise.race([file.slice(s, e).arrayBuffer(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('reading the file stalled')), STALL_MS))]);
+      readMs += performance.now() - t; readBytes += e - s;
+      ready.push([s, e, buf]);
+    }
+    readDone = true;
+  })().catch(err => { failed = failed || err; });
+  const sender = async () => {
+    while (!failed) {
+      const job = ready.shift();
+      if (!job) { if (readDone) return; await sleep(4); continue; }
+      const [s, e, buf] = job;
+      for (let attempt = 0; ; attempt++) {
+        inflight.set(s, 0);
+        try { await put(id, s, buf, b => inflight.set(s, b), ctl); inflight.delete(s); sentBytes += e - s; break; }
+        catch (err) { inflight.delete(s); if (failed) return; if (attempt >= 3) { failed = err; return; } await sleep(500 * (attempt + 1)); }
+      }
+    }
+  };
+  await Promise.all([reader, ...Array.from({ length: PARALLEL }, sender)]);
+  clearInterval(tm);
+  const secs = (performance.now() - t0) / 1000;
+  report(`read-ahead engine: file read ${(readBytes / MB / Math.max(0.001, readMs / 1000)).toFixed(0)} MB/s, sent ${(sentBytes / MB).toFixed(0)} MB at ${(sentBytes / MB / secs).toFixed(1)} MB/s`);
+  if (failed) throw failed;
+  prog.done = file.size;
+}
+
