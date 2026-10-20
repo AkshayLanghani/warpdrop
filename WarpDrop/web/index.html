@@ -417,3 +417,43 @@ async function uploadPipeline(id, file, prog, mustBeat) {
   prog.done = file.size;
 }
 
+// One continuous stream from wherever the PC's gap-free data ends. Finishes the job after turbo
+// mode (usually nothing left to send), or carries the whole file if turbo mode gave up.
+async function uploadStream(id, file, prog, ui) {
+  let received = (await upStatus(id))?.received ?? 0;
+  for (let attempt = 0; received < file.size; attempt++) {
+    prog.done = received;
+    try {
+      await put(id, received, received === 0 ? file : file.slice(received), b => { prog.done = received + b; });
+    } catch (err) {
+      report(`upload '${file.name}' (${(file.size / MB).toFixed(1)} MB) stopped near ${(prog.done / MB).toFixed(1)} MB, try ${attempt + 1}: ${err.message}`);
+      if (attempt >= MAX_RESUMES) throw err;
+      ui.note(`Reconnecting… (${err.message})`);
+      await sleep(Math.min(5000, 800 * (attempt + 1)));
+    }
+    // The PC says how much it has safely on disk; continue from exactly there.
+    const s = await upStatus(id);
+    if (s && s.received >= 0) received = s.received;
+  }
+  prog.done = file.size;
+}
+
+function put(id, off, body, onProgress, ctl) {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    ctl?.xhrs.add(x);
+    let last = performance.now(), stalled = false;
+    // No progress for STALL_MS = a dead connection (iOS doesn't always report one); abort and resume.
+    const dog = setInterval(() => { if (performance.now() - last > STALL_MS) { stalled = true; x.abort(); } }, 2000);
+    const end = (fn, arg) => { clearInterval(dog); ctl?.xhrs.delete(x); fn(arg); };
+    x.open('PUT', api(`/api/up/${id}?off=${off}`));
+    x.upload.onprogress = e => { last = performance.now(); onProgress(e.loaded); };
+    x.onload = () => x.status === 200 ? end(resolve) : end(reject, new Error('HTTP ' + x.status));
+    x.onerror = () => end(reject, new Error('connection lost'));
+    x.onabort = () => end(reject, new Error(stalled ? 'stalled 20 s' : 'aborted'));
+    x.send(body);
+  });
+}
+</script>
+</body>
+</html>
