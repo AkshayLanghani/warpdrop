@@ -22,6 +22,16 @@ public partial class App : Application
             Shutdown();
             return;
         }
+        if (e.Args.Contains("--probe-bands"))
+        {
+            // Read-only: which hotspot bands/security this PC's Wi-Fi driver can host. Changes nothing.
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            var lines = await Hotspot.ProbeAsync();
+            foreach (var line in lines) Diag.Log("probe: " + line);
+            MessageBox.Show(string.Join("\n", lines), "WarpDrop · hotspot capabilities");
+            Shutdown();
+            return;
+        }
         LanOnly = e.Args.Contains("--lan");
         NoFirewall = e.Args.Contains("--nofw") || e.Args.Contains("--notune");
         FixedToken = e.Args.FirstOrDefault(a => a.StartsWith("--token="))?["--token=".Length..];

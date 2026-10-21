@@ -6,7 +6,8 @@ using Windows.Networking.NetworkOperators;
 
 namespace WarpDrop;
 
-public sealed record HotspotResult(bool Ok, string Message, bool FiveGhz);
+/// <summary>Band is "6 GHz", "5 GHz" or "auto band" when Ok.</summary>
+public sealed record HotspotResult(bool Ok, string Message, string Band);
 
 /// <summary>
 /// Drives Windows Mobile Hotspot through the WinRT tethering API. The laptop becomes
@@ -28,12 +29,22 @@ public sealed class Hotspot
         get { try { return (int)(_mgr?.ClientCount ?? 0); } catch { return 0; } }
     }
 
-    public async Task<HotspotResult> StartAsync(string ssid, string password)
+    /// <summary>Whether the adapter/driver accepted a 6 GHz (WPA3) hotspot on the last start.</summary>
+    public bool SixGhzSupported { get; private set; }
+
+    const string ConfigType = "Windows.Networking.NetworkOperators.NetworkOperatorTetheringAccessPointConfiguration";
+
+    /// <summary>
+    /// Starts the hotspot on the fastest band the adapter accepts. 6 GHz comes first: it is a clean
+    /// band with no legacy neighbours, so a hotspot there keeps far more airtime than on crowded 5 GHz.
+    /// 6 GHz requires WPA3 (SAE). Falls back to 5 GHz (WPA2), then to whatever Windows picks.
+    /// </summary>
+    public async Task<HotspotResult> StartAsync(string ssid, string password, bool allowSixGhz)
     {
         try
         {
             _mgr = CreateManager(out var why);
-            if (_mgr == null) return new(false, why, false);
+            if (_mgr == null) return new(false, why, "");
 
             if (_previous == null)
             {
@@ -41,30 +52,93 @@ public sealed class Hotspot
                 _wasOnBefore = _mgr.TetheringOperationalState == TetheringOperationalState.On;
             }
 
-            var cfg = new NetworkOperatorTetheringAccessPointConfiguration { Ssid = ssid, Passphrase = password };
-            // 5 GHz is the single biggest speed lever: typically 4-10x the throughput of 2.4 GHz.
-            bool five = await TryUseFiveGhzAsync(cfg);
+            var ladder = new List<(TetheringWiFiBand Band, TetheringWiFiAuthenticationKind Auth, string Label)>();
+            if (allowSixGhz) ladder.Add((TetheringWiFiBand.SixGigahertz, TetheringWiFiAuthenticationKind.Wpa3, "6 GHz"));
+            ladder.Add((TetheringWiFiBand.FiveGigahertz, TetheringWiFiAuthenticationKind.Wpa2, "5 GHz"));
+            ladder.Add((TetheringWiFiBand.Auto, TetheringWiFiAuthenticationKind.Wpa2, "auto band"));
 
             // A fresh start lets the driver pick the best channel for the current radio situation.
             if (_mgr.TetheringOperationalState == TetheringOperationalState.On) await _mgr.StopTetheringAsync();
-            await _mgr.ConfigureAccessPointAsync(cfg);
-            var r = await _mgr.StartTetheringAsync();
-            if (r.Status != TetheringOperationStatus.Success && five)
-            {
-                cfg.Band = TetheringWiFiBand.Auto;
-                five = false;
-                await _mgr.ConfigureAccessPointAsync(cfg);
-                r = await _mgr.StartTetheringAsync();
-            }
-            if (r.Status != TetheringOperationStatus.Success) return new(false, Describe(r), false);
 
-            _started = true;
-            return new(true, five ? "5 GHz" : "auto band", five);
+            SixGhzSupported = false;
+            NetworkOperatorTetheringOperationResult? last = null;
+            foreach (var (band, auth, label) in ladder)
+            {
+                var cfg = new NetworkOperatorTetheringAccessPointConfiguration { Ssid = ssid, Passphrase = password };
+                string? refused = await TryConfigureAsync(cfg, band, auth);
+                if (refused != null)
+                {
+                    Diag.Log($"Hotspot: skipping {label}: {refused}");
+                    continue;
+                }
+                if (band == TetheringWiFiBand.SixGigahertz) SixGhzSupported = true;
+                await _mgr.ConfigureAccessPointAsync(cfg);
+                last = await _mgr.StartTetheringAsync();
+                if (last.Status == TetheringOperationStatus.Success)
+                {
+                    _started = true;
+                    return new(true, label, label);
+                }
+                Diag.Log($"Hotspot: {label} would not start ({Describe(last)})");
+            }
+            return new(false, last != null ? Describe(last) : "No usable Wi-Fi band for Mobile Hotspot.", "");
         }
         catch (Exception ex)
         {
-            return new(false, "Mobile Hotspot failed: " + ex.Message, false);
+            return new(false, "Mobile Hotspot failed: " + ex.Message, "");
         }
+    }
+
+    /// <summary>Applies band + security to the config. Returns null if usable, otherwise why not.</summary>
+    static async Task<string?> TryConfigureAsync(NetworkOperatorTetheringAccessPointConfiguration cfg,
+        TetheringWiFiBand band, TetheringWiFiAuthenticationKind auth)
+    {
+        if (band == TetheringWiFiBand.Auto) return null;
+        try
+        {
+            if (!Windows.Foundation.Metadata.ApiInformation.IsPropertyPresent(ConfigType, "Band"))
+                return "this Windows version can't choose the hotspot band";
+            if (auth != TetheringWiFiAuthenticationKind.Wpa2)
+            {
+                if (!Windows.Foundation.Metadata.ApiInformation.IsPropertyPresent(ConfigType, "AuthenticationKind"))
+                    return "this Windows version can't set hotspot security";
+                if (!await cfg.IsAuthenticationKindSupportedAsync(auth))
+                    return $"the Wi-Fi driver doesn't support {auth} hotspots";
+                cfg.AuthenticationKind = auth;
+            }
+            if (!await cfg.IsBandSupportedAsync(band))
+                return "the Wi-Fi adapter/driver doesn't support hosting on this band";
+            cfg.Band = band;
+            return null;
+        }
+        catch (Exception ex) { return ex.Message; }
+    }
+
+    /// <summary>Read-only report of which hotspot bands and security modes this PC can host.</summary>
+    public static async Task<IReadOnlyList<string>> ProbeAsync()
+    {
+        var lines = new List<string>();
+        var wifi = NetworkInterface.GetAllNetworkInterfaces()
+            .FirstOrDefault(n => n.NetworkInterfaceType == NetworkInterfaceType.Wireless80211 && !n.Description.Contains("Virtual", StringComparison.OrdinalIgnoreCase));
+        lines.Add("Wi-Fi adapter: " + (wifi?.Description ?? "none found"));
+        if (CreateManager(out var why) == null) { lines.Add("Mobile Hotspot: unavailable (" + why + ")"); return lines; }
+        try
+        {
+            foreach (var auth in new[] { TetheringWiFiAuthenticationKind.Wpa2, TetheringWiFiAuthenticationKind.Wpa3TransitionMode, TetheringWiFiAuthenticationKind.Wpa3 })
+            {
+                var cfg = new NetworkOperatorTetheringAccessPointConfiguration();
+                lines.Add($"Security {auth}: {(await cfg.IsAuthenticationKindSupportedAsync(auth) ? "supported" : "not supported")}");
+            }
+            foreach (var band in new[] { TetheringWiFiBand.TwoPointFourGigahertz, TetheringWiFiBand.FiveGigahertz, TetheringWiFiBand.SixGigahertz })
+            {
+                var cfg = new NetworkOperatorTetheringAccessPointConfiguration();
+                if (band == TetheringWiFiBand.SixGigahertz && await cfg.IsAuthenticationKindSupportedAsync(TetheringWiFiAuthenticationKind.Wpa3))
+                    cfg.AuthenticationKind = TetheringWiFiAuthenticationKind.Wpa3;
+                lines.Add($"Band {band}: {(await cfg.IsBandSupportedAsync(band) ? "supported" : "not supported")}");
+            }
+        }
+        catch (Exception ex) { lines.Add("Probe failed: " + ex.Message); }
+        return lines;
     }
 
     /// <summary>Windows switches the hotspot off when idle; turn it back on.</summary>
@@ -109,20 +183,6 @@ public sealed class Hotspot
         catch { }
         _previous = null;
         _wasOnBefore = false;
-    }
-
-    static async Task<bool> TryUseFiveGhzAsync(NetworkOperatorTetheringAccessPointConfiguration cfg)
-    {
-        try
-        {
-            if (!Windows.Foundation.Metadata.ApiInformation.IsPropertyPresent(
-                    "Windows.Networking.NetworkOperators.NetworkOperatorTetheringAccessPointConfiguration", "Band"))
-                return false;
-            if (!await cfg.IsBandSupportedAsync(TetheringWiFiBand.FiveGigahertz)) return false;
-            cfg.Band = TetheringWiFiBand.FiveGigahertz;
-            return true;
-        }
-        catch { return false; }
     }
 
     static NetworkOperatorTetheringManager? CreateManager(out string why)

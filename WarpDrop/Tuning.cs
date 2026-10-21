@@ -34,6 +34,8 @@ $want = [ordered]@{
   'MIMO Power Save Mode'   = 'No SMPS'      # both antennas/spatial streams always on
   'Transmit Power'         = '5. Highest'
   'Channel Width for 5GHz' = 'Auto'         # widest channel the driver allows
+  'Channel Width for 6GHz' = 'Auto'
+  'Ultra High Band (6GHz)' = 'Enabled'      # 6 GHz radio on, for a 6 GHz hotspot where the driver allows it
   'U-APSD support'         = 'Disabled'
 }
 $sub = '19cbb8fa-5279-450e-9fac-8a3d5fedd0c1'; $set = '12bbebe6-58d6-4636-95bb-3217ef867c1a'

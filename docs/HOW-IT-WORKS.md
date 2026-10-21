@@ -16,7 +16,14 @@ iPhone (Safari)                                   Windows PC (WarpDrop.exe)
 
 ## The network
 
-- **Hotspot.** Started through `NetworkOperatorTetheringManager`, the same API as Settings → Mobile hotspot. The band is set to 5 GHz when `IsBandSupportedAsync` allows it. The PC's address on the hotspot is normally `192.168.137.1`.
+- **Hotspot.** Started through `NetworkOperatorTetheringManager`, the same API as Settings → Mobile hotspot. The PC's address on the hotspot is normally `192.168.137.1`.
+- **Band ladder.** WarpDrop tries each band in order until one starts:
+  1. **6 GHz with WPA3 (SAE).** 6 GHz requires WPA3, so this needs both `IsAuthenticationKindSupportedAsync(Wpa3)` and `IsBandSupportedAsync(SixGigahertz)`.
+  2. **5 GHz with WPA2.**
+  3. **Auto**, letting Windows choose.
+
+  Each skipped step and why is logged. The 6 GHz step can be turned off from the UI for iPhones without 6 GHz. `--probe-bands` prints the same capability checks without starting anything.
+- **Why some drivers can't do 6 GHz.** The WPA3/6 GHz hotspot capability comes from the Wi-Fi driver itself. On Intel AX211 there's no registry setting for it: its INF exposes `Is6GhzBandSupported` (the 6 GHz client radio), but nothing for a WPA3 or 6 GHz hotspot. 6 GHz rules only let certified access points start transmissions on the band, which is why vendors gate it in the driver.
 - **Dedicated radio.** Laptops have one Wi-Fi radio, shared between the laptop's own connection (the "station") and the hotspot. While the station is connected, the hotspot has to use its channel or time-share with it. WarpDrop therefore:
   1. pauses Windows Wi-Fi auto-config through the guardian, which stops auto-joining and background scans;
   2. disconnects the station and waits until it's really down;

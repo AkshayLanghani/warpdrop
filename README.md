@@ -17,7 +17,10 @@ WarpDrop turns your laptop into its own private 5 GHz Wi-Fi network. Scan one QR
 
 ## Features
 
-- **Its own network.** Starts Windows Mobile Hotspot on 5 GHz with a random password, and dedicates the Wi-Fi radio to it.
+- **Its own network.** Starts Windows Mobile Hotspot with a random password and dedicates the Wi-Fi radio to it.
+  - **6 GHz first:** if the Wi-Fi driver can host 6 GHz (WPA3), WarpDrop uses it. 6 GHz is far less crowded than 5 GHz.
+  - Otherwise it uses 5 GHz.
+  - One tap switches back to 5 GHz for iPhones without 6 GHz.
 - **QR codes:** one to join the Wi-Fi, one to open the page. The iPhone remembers the network for next time.
 - **Both directions:**
   - PC → iPhone: drag files onto the window, tap Download on the phone. Files land in Files › Downloads.
@@ -96,7 +99,7 @@ While the switch is ON, WarpDrop makes these changes so the radio and network st
 | Laptop's own Wi-Fi connection | Disconnected | The radio serves only the WarpDrop network and picks its own channel. Otherwise it's pinned to the internet network's channel or time-sliced against it (≈ half speed). |
 | Windows Wi-Fi auto-config (auto-join + background scans) | Paused | Background scans pull the radio off-channel; auto-join would reconnect to another saved network. |
 | TCP congestion control | CUBIC → **BBR2**, min retransmit timeout 300 → 60 ms | A single stream holds its speed on a noisy channel instead of halving on every lost packet. |
-| Intel Wi-Fi driver | Throughput Booster on, MIMO power save off, max transmit power, widest channel | Both antennas always active, aggressive transmit bursting. Skipped on adapters that don't have these settings. |
+| Intel Wi-Fi driver | Throughput Booster on, MIMO power save off, max transmit power, widest 5 and 6 GHz channels, 6 GHz radio on | Both antennas always active, aggressive transmit bursting. Skipped on adapters that don't have these settings. |
 | Wi-Fi adapter power plan | Maximum performance (battery too) | No power-save throttling mid-transfer. |
 | Windows power mode | Best performance, no sleep, high process priority | No CPU throttling. |
 | Hotspot auto-off | Disabled | Windows otherwise turns an idle hotspot off. |
@@ -120,7 +123,8 @@ The only lasting change is a Windows Firewall rule that allows WarpDrop itself. 
 
 Some honest physics:
 
-- **Windows hotspots are limited to 80 MHz channels** on 5 GHz (no radar-checked DFS channels). Most adapters can't host on 6 GHz at all. That caps the link rate at 1201 Mbps, which is roughly 600–950 Mbps of real data in a quiet location.
+- **Windows hotspots are limited to 80 MHz channels** on 5 GHz (no radar-checked DFS channels). That caps the link rate at 1201 Mbps, which is roughly 600–950 Mbps of real data in a quiet location.
+- **6 GHz hosting depends on the Wi-Fi driver.** It needs a driver that supports WPA3 hotspots (Windows 11 24H2+). Many don't yet, including Intel AX211 on driver 24.50. Run `WarpDrop.exe --probe-bands` to see what yours supports. When 6 GHz is available, WarpDrop uses it automatically. It works with iPhone 15 Pro, iPhone 16 and iPhone 17 models (not 16e/17e).
 - **Crowded channels cut that further.** Every nearby network on the same channel shares the airtime, and Windows doesn't let apps choose the hotspot channel.
 - **Faster than Wi-Fi:** on iPhone 15 Pro and later (USB 3), connect a 2.5 GbE USB-C Ethernet adapter to the phone and one to the PC with a cable. WarpDrop detects the wired link and shows a QR code for it.
 
@@ -145,6 +149,7 @@ Getting the most out of Wi-Fi:
 | Option | Effect |
 |---|---|
 | `--restore-system` | Emergency undo: restores all original Wi-Fi, TCP, power and hotspot settings and removes the firewall rule. |
+| `--probe-bands` | Read-only: shows which hotspot bands (2.4/5/6 GHz) and security modes (WPA2/WPA3) this PC's Wi-Fi driver can host. Changes nothing. |
 | `--notune` | Switch ON without the admin prompt: no tuning and no firewall rule (Windows shows its own firewall prompt instead). Slower, but no system changes. |
 | `--lan` | No switch. Serve on the network the PC is already on (phone must be on the same Wi-Fi). |
 | `<file or folder paths>` | Share these at startup. |

@@ -134,21 +134,22 @@ public partial class MainWindow : Window
         Diag.Log($"Laptop Wi-Fi after disconnect: connected={st?.Connected} profile={st?.Profile}");
 
         SetStatus("Creating the WarpDrop network…", Amber);
-        var res = await _hotspot.StartAsync(_settings.Ssid, _settings.Password);
-        Diag.Log($"Hotspot start (dedicated, auto-config paused={boosted}): ok={res.Ok} {res.Message}");
+        bool six = _settings.PreferSixGhz;
+        var res = await _hotspot.StartAsync(_settings.Ssid, _settings.Password, six);
+        Diag.Log($"Hotspot start (dedicated, auto-config paused={boosted}, 6 GHz allowed={six}): ok={res.Ok} {res.Message}");
         bool dedicated = true;
         if (!res.Ok && boosted && await _guardian.ResumeAutoConfigAsync())
         {
             // Some drivers need Windows Wi-Fi auto-config running to host; keep the radio dedicated anyway.
             await Task.Delay(2000);
-            res = await _hotspot.StartAsync(_settings.Ssid, _settings.Password);
+            res = await _hotspot.StartAsync(_settings.Ssid, _settings.Password, six);
             Diag.Log($"Hotspot start (dedicated, auto-config on): ok={res.Ok} {res.Message}");
         }
         if (!res.Ok && _station != null)
         {
             // Windows refused to host without the laptop's own connection: share the radio instead.
             await ReconnectStationAsync();
-            res = await _hotspot.StartAsync(_settings.Ssid, _settings.Password);
+            res = await _hotspot.StartAsync(_settings.Ssid, _settings.Password, six);
             dedicated = false;
             Diag.Log($"Hotspot start (shared radio): ok={res.Ok} {res.Message}");
         }
@@ -170,10 +171,59 @@ public partial class MainWindow : Window
         SsidText.Text = "Network: " + _settings.Ssid;
         PassText.Text = "Password: " + _settings.Password;
         if (!_showWired) ShowUrl(_wifiIp);
-        SetStatus(dedicated
-            ? $"ON · {res.Message} · dedicated radio · laptop internet off"
-            : $"ON · {res.Message} · shared radio (Windows needed the laptop's Wi-Fi)", dedicated ? Green : Amber);
-        _ = CheckBandAsync(res.FiveGhz);
+        ShowNetworkStatus(res.Band);
+    }
+
+    void ShowNetworkStatus(string band)
+    {
+        _band = band;
+        SetStatus(_dedicated
+            ? $"ON · {band} · dedicated radio · laptop internet off"
+            : $"ON · {band} · shared radio (Windows needed the laptop's Wi-Fi)", _dedicated ? Green : Amber);
+        UpdateBandButton();
+        _ = CheckBandAsync(band);
+    }
+
+    // ---------- 6 GHz / 5 GHz choice ----------
+
+    string _band = "";
+
+    void UpdateBandButton()
+    {
+        // Only offer a switch when there is a real choice: the adapter can host 6 GHz.
+        BandButton.Visibility = _on && _hotspot.SixGhzSupported ? Visibility.Visible : Visibility.Collapsed;
+        BandButton.Content = _band == "6 GHz"
+            ? "6 GHz: iPhone 15 Pro, 16 or 17 only. Older iPhone? Switch to 5 GHz"
+            : "On 5 GHz. iPhone 15 Pro, 16 or 17? Switch to 6 GHz (faster)";
+    }
+
+    /// <summary>6 GHz is invisible to older iPhones; let the user flip bands without turning the switch off.</summary>
+    async void OnBandSwitch(object sender, RoutedEventArgs e)
+    {
+        if (_busy || !_on) return;
+        _busy = true;
+        BandButton.IsEnabled = false;
+        try
+        {
+            _settings.PreferSixGhz = _band != "6 GHz";
+            _settings.Save();
+            SetStatus($"Restarting the network on {(_settings.PreferSixGhz ? "6" : "5")} GHz…", Amber);
+            var res = await _hotspot.StartAsync(_settings.Ssid, _settings.Password, _settings.PreferSixGhz);
+            Diag.Log($"Band switch (6 GHz allowed={_settings.PreferSixGhz}): ok={res.Ok} {res.Message}");
+            if (!res.Ok)
+            {
+                SetStatus("Band switch failed: " + res.Message, Red);
+                return;
+            }
+            _wifiIp = await Hotspot.WaitForHotspotIpAsync();
+            if (!_showWired) ShowUrl(_wifiIp);
+            ShowNetworkStatus(res.Band);
+        }
+        finally
+        {
+            BandButton.IsEnabled = true;
+            _busy = false;
+        }
     }
 
     async Task TurnOffAsync()
@@ -200,6 +250,7 @@ public partial class MainWindow : Window
         WifiQrPlaceholder.Visibility = Visibility.Visible;
         SsidText.Text = PassText.Text = LinkText.Text = "";
         BandWarning.Visibility = Visibility.Collapsed;
+        BandButton.Visibility = Visibility.Collapsed;
         if (!_showWired) ClearUrl();
         SetStatus("OFF · your laptop's Wi-Fi and internet are untouched", (Brush)FindResource("Mute"));
     }
@@ -269,21 +320,27 @@ public partial class MainWindow : Window
         WiredButton.Content = _showWired ? "Back to Wi-Fi QR" : $"⚡ Wired link {wired?.Bps / 1e9:0.#} Gbps found: show its QR";
     }
 
-    async Task CheckBandAsync(bool fiveRequested)
+    async Task CheckBandAsync(string hotspotBand)
     {
         var st = await Task.Run(WifiStation.Query);
         string? band = st is { Connected: true } ? st.Band : null;
         BandWarning.Visibility = Visibility.Collapsed;
-        if (!fiveRequested)
+        if (hotspotBand == "auto band")
         {
             BandWarning.Text = "⚠ This adapter/driver refused a 5 GHz hotspot; Windows picked the band. Expect much lower speed.";
             BandWarning.Visibility = Visibility.Visible;
         }
-        else if (!_dedicated && band != null && !band.StartsWith('5'))
+        else if (!_dedicated && band != null && band[0] != hotspotBand[0])
         {
             // One radio serves both the laptop's own Wi-Fi and the hotspot. Different bands = time-slicing.
-            BandWarning.Text = $"⚠ Laptop Wi-Fi is connected on {band} but the hotspot is 5 GHz, so the radio has to time-share (≈ half speed). " +
-                               "Connect the laptop to a 5 GHz network, use Ethernet for internet, or disconnect its Wi-Fi.";
+            BandWarning.Text = $"⚠ Laptop Wi-Fi is connected on {band} but the hotspot is {hotspotBand}, so the radio has to time-share (≈ half speed). " +
+                               "Use Ethernet for internet, or disconnect the laptop's Wi-Fi.";
+            BandWarning.Visibility = Visibility.Visible;
+        }
+        else if (_settings.PreferSixGhz && !_hotspot.SixGhzSupported)
+        {
+            BandWarning.Text = "This Wi-Fi adapter/driver can't host a 6 GHz hotspot (6 GHz needs a WPA3-capable hotspot driver), so 5 GHz is used. " +
+                               "A newer Wi-Fi driver may add it: run WarpDrop.exe --probe-bands to check.";
             BandWarning.Visibility = Visibility.Visible;
         }
     }

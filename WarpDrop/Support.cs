@@ -58,6 +58,8 @@ public sealed class Settings
     public string Ssid { get; set; } = "";
     public string Password { get; set; } = "";
     public string ReceiveDir { get; set; } = "";
+    /// <summary>Host on 6 GHz when the adapter can (empty band, much faster); off for iPhones without 6 GHz.</summary>
+    public bool PreferSixGhz { get; set; } = true;
 
     static string FilePath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "WarpDrop", "settings.json");
 
