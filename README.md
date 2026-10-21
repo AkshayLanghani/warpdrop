@@ -107,3 +107,73 @@ The restore is handled by a small elevated guardian process. If WarpDrop crashes
 
 The only lasting change is a Windows Firewall rule that allows WarpDrop itself. `--restore-system` removes it.
 
+## How fast is it?
+
+**The Wi-Fi link is the limit, not WarpDrop.** The server moves about 1 GB/s on the PC itself. What you get over the air depends on hardware and on how crowded your 5 GHz channels are.
+
+| Example (Intel AX211 laptop, recent iPhone, apartment building with ~70 visible Wi-Fi networks) | Measured |
+|---|---|
+| Hotspot link rate | 1201 Mbps (5 GHz, 80 MHz, 2×2) |
+| PC → iPhone, 2 GB video | **42.5 MB/s** sustained (≈ 340 Mbps) |
+| iPhone → PC, 4-lane speed test | 45–51 MB/s |
+| iPhone → PC, large video | 25–50 MB/s; varies with how the iPhone reads and transmits (see [docs](docs/HOW-IT-WORKS.md#known-limits)) |
+
+Some honest physics:
+
+- **Windows hotspots are limited to 80 MHz channels** on 5 GHz (no radar-checked DFS channels). Most adapters can't host on 6 GHz at all. That caps the link rate at 1201 Mbps, which is roughly 600–950 Mbps of real data in a quiet location.
+- **Crowded channels cut that further.** Every nearby network on the same channel shares the airtime, and Windows doesn't let apps choose the hotspot channel.
+- **Faster than Wi-Fi:** on iPhone 15 Pro and later (USB 3), connect a 2.5 GbE USB-C Ethernet adapter to the phone and one to the PC with a cable. WarpDrop detects the wired link and shows a QR code for it.
+
+Getting the most out of Wi-Fi:
+- Keep the phone close to the laptop.
+- Keep Safari in the foreground with the screen on.
+- Plug the laptop in.
+
+## Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| "Couldn't create the network" | Turn Wi-Fi on in Windows. Some adapters or drivers don't support Mobile Hotspot. Everything is restored automatically. |
+| Status says "shared radio" | Windows refused to host with the laptop's Wi-Fi disconnected, so WarpDrop fell back to sharing the radio. It works, but slower. |
+| Phone page won't load | The firewall prompt may have been declined. Switch OFF and ON again and approve the admin prompt. |
+| Laptop has no internet | Expected while ON (the radio is dedicated). Switch OFF. Ethernet keeps working while ON. |
+| Transfer slowed down | Look at `%APPDATA%\WarpDrop\diag.log`. It records link rate, per-second speeds, speed tests, engine switches and errors. |
+| Settings feel off after a crash | Run `WarpDrop.exe --restore-system`. |
+
+## Command-line options
+
+| Option | Effect |
+|---|---|
+| `--restore-system` | Emergency undo: restores all original Wi-Fi, TCP, power and hotspot settings and removes the firewall rule. |
+| `--notune` | Switch ON without the admin prompt: no tuning and no firewall rule (Windows shows its own firewall prompt instead). Slower, but no system changes. |
+| `--lan` | No switch. Serve on the network the PC is already on (phone must be on the same Wi-Fi). |
+| `<file or folder paths>` | Share these at startup. |
+
+## Privacy and security
+
+- Everything stays between your PC and your phone. Nothing is uploaded anywhere, and there's no telemetry.
+- The network is WPA2-protected with a random password stored only on your PC (`%APPDATA%\WarpDrop\settings.json`).
+- Every file download and API call needs a random access token that's embedded in the QR code and changes every time the app starts. Without it, the page loads but can't list, download or upload anything.
+- Received files go to `Downloads\WarpDrop`. Shared files are read-only to the phone.
+
+## Project layout
+
+```
+WarpDrop/
+├── FastServer.cs        HTTP/1.1 server on raw sockets: downloads, resumable parallel uploads, speed test
+├── Hotspot.cs           WinRT Mobile Hotspot control, dedicated radio, wired-link detection
+├── Tuning.cs            Elevated session guardian (apply + restore system tuning), power boost
+├── MainWindow.xaml(.cs) The desktop UI and the ON/OFF switch
+├── Support.cs           Settings, QR rendering, diagnostics log, helpers
+└── web/index.html       The iPhone page (embedded in the exe): upload engines, speed test
+```
+
+See [docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md) for the architecture, HTTP API, upload engines and measurements.
+
+## Contributing
+
+Issues and pull requests are welcome. The most useful thing you can share is a speed test result plus the relevant lines from `diag.log`, along with your Wi-Fi adapter and phone model. Please check a change end to end with a real phone before opening a PR. The upload engines especially behave differently on iOS than on desktop browsers.
+
+## License
+
+[MIT](LICENSE)
