@@ -103,9 +103,12 @@ public sealed class FastServer : IDisposable
         public required Transfer T;
         public long Contig; // bytes on disk from offset 0 with no gaps: where a resumed upload continues
         public readonly SortedList<long, long> Ranges = new(); // written [start, end) ranges, merged
+        public long LastActive = Environment.TickCount64;
     }
 
     static readonly TimeSpan BodyStallTimeout = TimeSpan.FromSeconds(60);
+    // A phone that closed the page leaves its upload open; release the file after this long idle.
+    const long AbandonedUploadMs = 15 * 60 * 1000;
 
     public FastServer(string receiveDir)
     {
@@ -438,6 +441,7 @@ public sealed class FastServer : IDisposable
                     filled += n;
                     Interlocked.Add(ref _bytesIn, n);
                     Interlocked.Add(ref u.T.Done, n);
+                    u.LastActive = Environment.TickCount64;
                 }
                 // Write this block to disk while the next one streams in from the network.
                 if (pendingWrite != null) { await pendingWrite; AddRange(u, pendingStart, pendingEnd); }
@@ -495,6 +499,9 @@ public sealed class FastServer : IDisposable
             final = File.Exists(u.FinalPath) ? UniquePath(Path.GetDirectoryName(u.FinalPath)!, Path.GetFileName(u.FinalPath)) : u.FinalPath;
             File.Move(u.PartPath, final);
         }
+        // Network bytes include anything re-sent after drops; more than the file size means waste.
+        long net = Interlocked.Read(ref u.T.Done);
+        Diag.Log($"Upload #{id}: {net / 1e6:0.0} MB crossed the network for a {u.T.Total / 1e6:0.0} MB file ({(u.T.Total == 0 ? 100 : net * 100.0 / u.T.Total):0}%)");
         u.T.Done = u.T.Total;
         Finish(u.T, ok: true);
         FileReceived?.Invoke(final);
@@ -534,7 +541,7 @@ public sealed class FastServer : IDisposable
 
     static async Task<bool> Respond(Conn c, Request r, int status, string type, byte[] body)
     {
-        string reason = status switch { 200 => "OK", 204 => "No Content", 400 => "Bad Request", 403 => "Forbidden", 404 => "Not Found", _ => "Error" };
+        string reason = status switch { 200 => "OK", 204 => "No Content", 400 => "Bad Request", 403 => "Forbidden", 404 => "Not Found", 409 => "Conflict", _ => "Error" };
         var head = $"HTTP/1.1 {status} {reason}\r\nContent-Type: {type}\r\nContent-Length: {body.Length}\r\nCache-Control: no-store\r\n" +
                    (r.KeepAlive ? "Connection: keep-alive\r\n\r\n" : "Connection: close\r\n\r\n");
         var bytes = new byte[Encoding.ASCII.GetByteCount(head) + (r.Method == "HEAD" ? 0 : body.Length)];
@@ -583,6 +590,18 @@ public sealed class FastServer : IDisposable
         // Keep the activity list short: all active transfers + the 30 most recent finished ones.
         foreach (var old in _transfers.Values.Where(t => t.State != 0).OrderByDescending(t => t.Id).Skip(30))
             _transfers.TryRemove(old.Id, out _);
+
+        // Uploads the phone abandoned (page closed, phone left) would otherwise lock their part file
+        // until WarpDrop exits. Any live request touches LastActive at least every 60 s (stall timeout).
+        long nowMs = Environment.TickCount64;
+        foreach (var (id, u) in _uploads)
+        {
+            if (nowMs - u.LastActive < AbandonedUploadMs || !_uploads.TryRemove(id, out _)) continue;
+            u.Handle.Dispose();
+            try { File.Delete(u.PartPath); } catch { }
+            Diag.Log($"Upload #{id} '{u.T.Name}' abandoned after 15 min idle; partial file removed");
+            Finish(u.T, ok: false);
+        }
     }
 
     public void Dispose()

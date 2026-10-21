@@ -227,10 +227,14 @@ $('#benchBtn').onclick = async () => {
 };
 
 // ---------- uploads ----------
-// Turbo: the file is split into up to 4 lanes, each one long continuous upload of its share.
-// A single TCP stream halves its speed on every loss on a crowded channel; 4 streams hold full
-// speed. One long request per lane (no rounds of small pieces) is what iOS handles reliably.
-// Safe mode fallback: one continuous resumable stream.
+// Engines, tried in order until the PC has every byte:
+//  1. Lanes: up to 4 long continuous uploads, one per share of the file. A single TCP stream
+//     halves its speed on every loss on a crowded channel; parallel lanes hold the link.
+//  2. Stream: sends only the gaps the PC is still missing, one continuous request per gap.
+//  3. Memory: reads missing blocks into memory before sending. Last resort for iOS builds that
+//     send file bodies empty (WebKit bug 319985).
+// Each engine checks the PC's received ranges, so nothing already on disk is sent twice, and an
+// engine that makes no progress hands over instead of retrying forever.
 const FILES_AT_ONCE = 2, STALL_MS = 20000, MAX_RESUMES = 8, LANE_MIN = 32 * 1024 * 1024, PARALLEL = 4;
 const report = msg => fetch(api('/api/log?msg=' + encodeURIComponent(msg)), { method: 'POST' }).catch(() => {});
 const queue = []; let active = 0, wake = null, localRate = 0, lastBytes = 0, sent = 0;
@@ -283,18 +287,17 @@ async function upload(file, ui) {
   const prog = { done: 0, prev: 0 };
   const timer = setInterval(() => { sent += prog.done - prog.prev; prog.prev = prog.done; ui.update(prog.done, file.size); }, 300);
   try {
-    if (file.size >= 2 * LANE_MIN) {
-      try { await uploadParallel(id, file, prog); }
+    const engines = [];
+    if (file.size >= 2 * LANE_MIN) engines.push(['lanes', () => uploadParallel(id, file, prog)]);
+    engines.push(['stream', () => uploadStream(id, file, prog, ui)], ['memory', () => uploadPipeline(id, file, prog)]);
+    for (const [name, run] of engines) {
+      try { await run(); break; }
       catch (err) {
-        report(`upload '${file.name}': ${err.message}; ${err.engineSwitch ? 'switching to read-ahead engine' : 'switching to safe mode'}`);
-        if (err.engineSwitch) {
-          ui.note('Speed dipped: switching engines…');
-          try { await uploadPipeline(id, file, prog, err.slowRate); }
-          catch (e2) { report(`upload '${file.name}': read-ahead engine stopped (${e2.message}); switching to safe mode`); ui.note('Switching to safe mode…'); }
-        } else ui.note('Switching to safe mode…');
+        if (name === 'memory') throw err;
+        report(`upload '${file.name}': ${name} engine stopped (${err.message}); trying the next engine`);
+        ui.note('Reconnecting with another method…');
       }
     }
-    await uploadStream(id, file, prog, ui);
   } catch (e) {
     fetch(api(`/api/up/${id}/cancel`), { method: 'POST' }).catch(() => {});
     throw e;
@@ -306,85 +309,66 @@ async function upload(file, ui) {
 }
 
 const upStatus = id => fetch(api(`/api/up/${id}/status`), { cache: 'no-store' }).then(x => x.json()).catch(() => null);
+// Byte ranges of the file the PC does not have yet (server ranges are sorted and merged).
+function gapsOf(ranges, size) {
+  const gaps = []; let pos = 0;
+  for (const [s, e] of ranges || []) { if (s > pos) gaps.push([pos, s]); pos = Math.max(pos, e); }
+  if (pos < size) gaps.push([pos, size]);
+  return gaps;
+}
+const spanBytes = gaps => gaps.reduce((a, [s, e]) => a + e - s, 0);
+
 async function uploadParallel(id, file, prog) {
   const k = Math.min(PARALLEL, Math.floor(file.size / LANE_MIN)), share = Math.ceil(file.size / k);
   const lanes = Array.from({ length: k }, (_, i) => ({ s: i * share, e: Math.min(file.size, (i + 1) * share), sent: 0 }));
   const ctl = { xhrs: new Set(), failed: null };
   const sumTimer = setInterval(() => { prog.done = lanes.reduce((a, l) => a + l.sent, 0); }, 250);
-  // Watch the 5-second speed. If it sags below 65% of its best for 6 s in a row, hand the rest of
-  // the file to the read-ahead engine (on iOS the file-streaming path can slow down mid-upload).
-  const t0 = performance.now(), hist = []; let best = 0, slow = 0;
-  const mon = setInterval(() => {
-    const now = performance.now(), d = lanes.reduce((a, l) => a + l.sent, 0);
-    hist.push([now, d]);
-    while (now - hist[0][0] > 5000) hist.shift();
-    if (now - t0 < 6000 || hist.length < 2) return;
-    const rate = (d - hist[0][1]) / ((now - hist[0][0]) / 1000);
-    best = Math.max(best, rate);
-    slow = rate < 0.65 * best ? slow + 1 : 0;
-    if (slow >= 6 && !ctl.failed && file.size - d > 200 * MB) {
-      const e = new Error(`lanes slowed from ${(best / MB).toFixed(0)} to ${(rate / MB).toFixed(0)} MB/s at ${(d / MB).toFixed(0)} MB`);
-      e.engineSwitch = true;
-      e.slowRate = rate;
-      ctl.failed = e;
-      ctl.xhrs.forEach(x => x.abort());
-    }
-  }, 1000);
   const run = async lane => {
-    let from = lane.s;
-    for (let attempt = 0; from < lane.e && !ctl.failed; attempt++) {
-      const base = from - lane.s;
+    let from = lane.s, stuck = 0;
+    for (let attempt = 0; from < lane.e && !ctl.failed; ) {
+      const base = from - lane.s, before = from;
+      let ok = true;
       try { await put(id, from, file.slice(from, lane.e), b => { lane.sent = base + b; }, ctl); }
       catch (err) {
         if (ctl.failed) return;
+        ok = false;
         report(`upload '${file.name}': lane at ${(lane.s / MB).toFixed(0)} MB dropped near ${((lane.s + lane.sent) / MB).toFixed(0)} MB, try ${attempt + 1}: ${err.message}`);
-        if (attempt >= 3) throw err;
-        await sleep(800 * (attempt + 1));
+        if (++attempt > 3) throw err;
+        await sleep(800 * attempt);
       }
       // Resume this lane exactly where the PC's data for it ends.
       const st = await upStatus(id);
       const hit = st?.ranges?.find(([rs, re]) => rs <= lane.s && re > lane.s);
       from = hit ? Math.min(lane.e, hit[1]) : lane.s;
       lane.sent = from - lane.s;
+      // A request that "succeeds" without the PC receiving anything (empty body) must not loop forever.
+      if (ok && from <= before && ++stuck >= 2) throw new Error('the PC received nothing from this lane');
     }
   };
   await Promise.allSettled(lanes.map(lane => run(lane).catch(err => {
     ctl.failed = ctl.failed || err;
-    ctl.xhrs.forEach(x => x.abort()); // stop the other lanes before safe mode takes over
+    ctl.xhrs.forEach(x => x.abort()); // stop the other lanes before the next engine takes over
     throw err;
   })));
   clearInterval(sumTimer);
-  clearInterval(mon);
   if (ctl.failed) throw ctl.failed;
   prog.done = file.size;
 }
 
-// Read-ahead engine: one reader pulls 8 MB blocks of whatever the PC is still missing into memory,
+// Memory engine: one reader pulls 8 MB blocks of whatever the PC is still missing into memory,
 // up to 6 blocks ahead, while 4 senders upload ready blocks (the same in-memory path the speed
 // test uses). Logs how fast the file read and how fast it sent, so the bottleneck is visible.
 const PIPE_CHUNK = 8 * 1024 * 1024, PIPE_AHEAD = 6;
-async function uploadPipeline(id, file, prog, mustBeat) {
-  const ranges = (await upStatus(id))?.ranges ?? [];
-  const gaps = []; let pos = 0;
-  for (const [s, e] of ranges) { if (s > pos) gaps.push([pos, s]); pos = Math.max(pos, e); }
-  if (pos < file.size) gaps.push([pos, file.size]);
-  const have = file.size - gaps.reduce((a, [s, e]) => a + e - s, 0);
+async function uploadPipeline(id, file, prog) {
+  const gaps = gapsOf((await upStatus(id))?.ranges, file.size);
+  const have = file.size - spanBytes(gaps);
   const jobs = [];
   for (const [s, e] of gaps) for (let o = s; o < e; o += PIPE_CHUNK) jobs.push([o, Math.min(e, o + PIPE_CHUNK)]);
 
   const ready = [], inflight = new Map(), ctl = { xhrs: new Set() };
   let readDone = false, failed = null, readMs = 0, readBytes = 0, sentBytes = 0;
   const t0 = performance.now();
-  const tm = setInterval(() => {
-    let f = 0; inflight.forEach(v => { f += v; });
-    prog.done = have + sentBytes + f;
-    // Only worth it if it beats the speed the lanes had sagged to; otherwise single-stream safe mode.
-    const secs = (performance.now() - t0) / 1000, rate = (sentBytes + f) / secs;
-    if (mustBeat && secs > 8 && rate < 0.9 * mustBeat && !failed && file.size - prog.done > 200 * MB) {
-      failed = new Error(`read-ahead ran ${(rate / MB).toFixed(0)} MB/s, no better than lanes`);
-      ctl.xhrs.forEach(x => x.abort());
-    }
-  }, 250);
+  const tm = setInterval(() => { let f = 0; inflight.forEach(v => { f += v; }); prog.done = have + sentBytes + f; }, 250);
   const reader = (async () => {
     for (const [s, e] of jobs) {
       while (ready.length >= PIPE_AHEAD && !failed) await sleep(4);
@@ -412,30 +396,38 @@ async function uploadPipeline(id, file, prog, mustBeat) {
   await Promise.all([reader, ...Array.from({ length: PARALLEL }, sender)]);
   clearInterval(tm);
   const secs = (performance.now() - t0) / 1000;
-  report(`read-ahead engine: file read ${(readBytes / MB / Math.max(0.001, readMs / 1000)).toFixed(0)} MB/s, sent ${(sentBytes / MB).toFixed(0)} MB at ${(sentBytes / MB / secs).toFixed(1)} MB/s`);
+  report(`memory engine: file read ${(readBytes / MB / Math.max(0.001, readMs / 1000)).toFixed(0)} MB/s, sent ${(sentBytes / MB).toFixed(0)} MB at ${(sentBytes / MB / secs).toFixed(1)} MB/s`);
   if (failed) throw failed;
+  const left = gapsOf((await upStatus(id))?.ranges, file.size);
+  if (left.length) throw new Error(`the PC is still missing ${(spanBytes(left) / MB).toFixed(1)} MB`);
   prog.done = file.size;
 }
 
-// One continuous stream from wherever the PC's gap-free data ends. Finishes the job after turbo
-// mode (usually nothing left to send), or carries the whole file if turbo mode gave up.
+// Stream engine: sends only what the PC is missing, one continuous request per gap. After the
+// lanes give up this fills just their holes instead of re-sending everything past the first gap.
 async function uploadStream(id, file, prog, ui) {
-  let received = (await upStatus(id))?.received ?? 0;
-  for (let attempt = 0; received < file.size; attempt++) {
-    prog.done = received;
+  let lastHave = -1, stuck = 0;
+  for (let attempt = 0; ; ) {
+    const st = await upStatus(id);
+    if (!st) throw new Error('lost contact with the PC');
+    const gaps = gapsOf(st.ranges, file.size), have = file.size - spanBytes(gaps);
+    prog.done = have;
+    if (!gaps.length) return;
+    // A request that "succeeds" without the PC receiving anything (empty body) must not loop forever.
+    if (have <= lastHave && ++stuck >= 2) throw new Error('the PC received nothing from this stream');
+    if (have > lastHave) stuck = 0;
+    lastHave = have;
+    const [s, e] = gaps[0];
     try {
-      await put(id, received, received === 0 ? file : file.slice(received), b => { prog.done = received + b; });
+      await put(id, s, s === 0 && e === file.size ? file : file.slice(s, e), b => { prog.done = have + b; });
     } catch (err) {
       report(`upload '${file.name}' (${(file.size / MB).toFixed(1)} MB) stopped near ${(prog.done / MB).toFixed(1)} MB, try ${attempt + 1}: ${err.message}`);
-      if (attempt >= MAX_RESUMES) throw err;
+      if (++attempt > MAX_RESUMES) throw err;
       ui.note(`Reconnecting… (${err.message})`);
-      await sleep(Math.min(5000, 800 * (attempt + 1)));
+      await sleep(Math.min(5000, 800 * attempt));
+      lastHave = -1; // a dropped connection is not "no progress"
     }
-    // The PC says how much it has safely on disk; continue from exactly there.
-    const s = await upStatus(id);
-    if (s && s.received >= 0) received = s.received;
   }
-  prog.done = file.size;
 }
 
 function put(id, off, body, onProgress, ctl) {

@@ -44,8 +44,7 @@ public partial class MainWindow : Window
         _timer.Tick += (_, _) => Tick();
         SourceInitialized += (_, _) => UseDarkTitleBar();
         Loaded += (_, _) => Startup();
-        foreach (var arg in Environment.GetCommandLineArgs().Skip(1).Where(a => !a.StartsWith("--")))
-            AddPath(arg);
+        AddPaths(Environment.GetCommandLineArgs().Skip(1).Where(a => !a.StartsWith("--")));
     }
 
     void Startup()
@@ -356,17 +355,10 @@ public partial class MainWindow : Window
         OutText.Text = Fmt.Rate(outR);
         InText.Text = Fmt.Rate(inR);
 
-        int clients = _on ? _hotspot.ClientCount : 0;
+        int clients = _on ? _clients : 0;
         SubSpeedText.Text = $"Peak {Fmt.Rate(_peak)} ({_peak * 8 / 1e9:0.00} Gbps)" + (_on ? $" · {clients} device{(clients == 1 ? "" : "s")}" : "");
 
-        if (_ticks % 5 == 0)
-        {
-            long link = _on ? Hotspot.HotspotLinkBps() : 0;
-            LinkText.Text = link > 0 ? $"Hotspot link rate: {link / 1e6:0} Mbps (radio max; real transfers reach ~65–80% of this)" : "";
-            UpdateWiredButton(Hotspot.FindWiredLink());
-            if (_on && (total > 0 || _ticks % 25 == 0))
-                Diag.Log($"tick link={link / 1_000_000}Mbps devices={clients} out={outR / 1e6:0.0}MB/s in={inR / 1e6:0.0}MB/s hotspotOn={_hotspot.IsOn}");
-        }
+        if (_ticks % 5 == 0 && !_sampling) SampleSystemAsync(total, outR, inR, _ticks);
         if (_server.LastBench is { } b)
         {
             BenchText.Text = $"Speed test: ↓ {b.Down1:0} Mbps (1 stream) · ↓ {b.Down4:0} Mbps (4) · ↑ {b.Up:0} Mbps";
@@ -377,7 +369,7 @@ public partial class MainWindow : Window
 
         // Watchdog: Windows turns an idle hotspot off after a few minutes.
         if (_on && _dedicated && _ticks % 15 == 0) _ = EnforceDedicatedAsync();
-        if (_on && _ticks % 25 == 0 && !_restarting && !_busy && !_hotspot.IsOn)
+        if (_on && _ticks % 25 == 0 && !_restarting && !_busy && !_hotspotOn)
         {
             _restarting = true;
             SetStatus("Re-enabling the WarpDrop network…", Amber);
@@ -388,6 +380,37 @@ public partial class MainWindow : Window
                 SetStatus(_hotspot.IsOn ? "ON · network restored" : "Network dropped: retrying", _hotspot.IsOn ? Green : Red);
             }));
         }
+    }
+
+    int _clients;
+    bool _hotspotOn = true, _sampling;
+
+    /// <summary>
+    /// Adapter enumeration and WinRT hotspot queries take tens of milliseconds; run them on a
+    /// background thread every ~2 s so the window (and live speed readout) never stutters.
+    /// </summary>
+    async void SampleSystemAsync(double total, double outR, double inR, int tick)
+    {
+        _sampling = true;
+        bool on = _on;
+        try
+        {
+            var s = await Task.Run(() =>
+            {
+                long link = on ? Hotspot.HotspotLinkBps() : 0;
+                int clients = on ? _hotspot.ClientCount : 0;
+                bool hotspotOn = !on || _hotspot.IsOn;
+                if (on && (total > 0 || tick % 25 == 0))
+                    Diag.Log($"tick link={link / 1_000_000}Mbps devices={clients} out={outR / 1e6:0.0}MB/s in={inR / 1e6:0.0}MB/s hotspotOn={hotspotOn}");
+                return (Link: link, Clients: clients, HotspotOn: hotspotOn, Wired: Hotspot.FindWiredLink());
+            });
+            _clients = s.Clients;
+            _hotspotOn = s.HotspotOn;
+            LinkText.Text = s.Link > 0 ? $"Hotspot link rate: {s.Link / 1e6:0} Mbps (radio max; real transfers reach ~65–80% of this)" : "";
+            UpdateWiredButton(s.Wired);
+        }
+        catch { }
+        finally { _sampling = false; }
     }
 
     void SyncActivity()
@@ -431,18 +454,27 @@ public partial class MainWindow : Window
 
     // ---------- file list ----------
 
-    void AddPath(string path)
+    /// <summary>
+    /// Shares files and whole folders. Folder scanning and file stats run off the UI thread, and the
+    /// list is updated once at the end, so dropping a folder of thousands of files doesn't freeze the window.
+    /// </summary>
+    async void AddPaths(IEnumerable<string> paths)
     {
-        if (Directory.Exists(path))
-        {
-            IEnumerable<string> files;
-            try { files = Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories).ToList(); }
-            catch { return; }
-            foreach (var f in files) AddPath(f);
-            return;
-        }
-        if (_server.Library.Add(path) is { } shared) _files.Add(shared);
+        var list = paths.ToList();
+        if (list.Count == 0) return;
+        var added = await Task.Run(() => list
+            .SelectMany(p => Directory.Exists(p) ? FilesUnder(p) : new[] { p })
+            .Select(f => _server.Library.Add(f))
+            .OfType<SharedFile>()
+            .ToList());
+        foreach (var f in added) _files.Add(f);
         RefreshFilesLabel();
+    }
+
+    static IEnumerable<string> FilesUnder(string dir)
+    {
+        try { return Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories).ToList(); }
+        catch { return Array.Empty<string>(); }
     }
 
     void RefreshFilesLabel()
@@ -455,13 +487,13 @@ public partial class MainWindow : Window
     void OnAddFiles(object sender, RoutedEventArgs e)
     {
         var dlg = new OpenFileDialog { Multiselect = true, Title = "Choose files to send to the iPhone" };
-        if (dlg.ShowDialog(this) == true) foreach (var f in dlg.FileNames) AddPath(f);
+        if (dlg.ShowDialog(this) == true) AddPaths(dlg.FileNames);
     }
 
     void OnAddFolder(object sender, RoutedEventArgs e)
     {
         var dlg = new OpenFolderDialog { Multiselect = true, Title = "Choose folders to send to the iPhone" };
-        if (dlg.ShowDialog(this) == true) foreach (var f in dlg.FolderNames) AddPath(f);
+        if (dlg.ShowDialog(this) == true) AddPaths(dlg.FolderNames);
     }
 
     void OnClear(object sender, RoutedEventArgs e)
@@ -493,8 +525,7 @@ public partial class MainWindow : Window
 
     void OnDrop(object sender, DragEventArgs e)
     {
-        if (e.Data.GetData(DataFormats.FileDrop) is string[] paths)
-            foreach (var p in paths) AddPath(p);
+        if (e.Data.GetData(DataFormats.FileDrop) is string[] paths) AddPaths(paths);
     }
 
     // ---------- chrome ----------

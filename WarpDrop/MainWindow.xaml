@@ -228,8 +228,19 @@
                 <TextBlock Text="They appear on the iPhone page instantly. Any size." Foreground="{StaticResource Mute}" HorizontalAlignment="Center" Margin="0,4,0,0"/>
               </StackPanel>
             </Border>
-            <ScrollViewer VerticalScrollBarVisibility="Auto">
-              <ItemsControl x:Name="FilesList">
+            <!-- Virtualized: only visible rows get built, so sharing thousands of files stays instant. -->
+            <ItemsControl x:Name="FilesList" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
+                          VirtualizingPanel.ScrollUnit="Pixel" ScrollViewer.CanContentScroll="True">
+                <ItemsControl.Template>
+                  <ControlTemplate TargetType="ItemsControl">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" CanContentScroll="True" Focusable="False">
+                      <ItemsPresenter/>
+                    </ScrollViewer>
+                  </ControlTemplate>
+                </ItemsControl.Template>
+                <ItemsControl.ItemsPanel>
+                  <ItemsPanelTemplate><VirtualizingStackPanel/></ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
                 <ItemsControl.ItemTemplate>
                   <DataTemplate>
                     <Border Padding="0,9" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
@@ -241,8 +252,7 @@
                     </Border>
                   </DataTemplate>
                 </ItemsControl.ItemTemplate>
-              </ItemsControl>
-            </ScrollViewer>
+            </ItemsControl>
           </Grid>
         </DockPanel>
       </Border>

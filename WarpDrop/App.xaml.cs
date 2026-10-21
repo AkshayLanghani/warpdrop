@@ -11,6 +11,8 @@ public partial class App : Application
     /// <summary>--token=xyz: fixed access token, for scripting/testing.</summary>
     public static string? FixedToken { get; private set; }
 
+    static Mutex? _instance; // held for the app's lifetime
+
     protected override async void OnStartup(StartupEventArgs e)
     {
         if (e.Args.Contains("--restore-system"))
@@ -35,6 +37,18 @@ public partial class App : Application
         LanOnly = e.Args.Contains("--lan");
         NoFirewall = e.Args.Contains("--nofw") || e.Args.Contains("--notune");
         FixedToken = e.Args.FirstOrDefault(a => a.StartsWith("--token="))?["--token=".Length..];
+
+        // Two copies would fight over the Wi-Fi radio and the guardian's settings. Test modes are exempt.
+        if (!LanOnly && FixedToken == null)
+        {
+            _instance = new Mutex(true, @"Local\WarpDrop.SingleInstance", out bool first);
+            if (!first)
+            {
+                MessageBox.Show("WarpDrop is already running. Use the window that's already open.", "WarpDrop");
+                Shutdown();
+                return;
+            }
+        }
         DispatcherUnhandledException += (_, ex) =>
         {
             MessageBox.Show(ex.Exception.Message, "WarpDrop", MessageBoxButton.OK, MessageBoxImage.Warning);

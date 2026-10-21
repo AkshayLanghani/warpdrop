@@ -72,13 +72,17 @@ The server is a minimal HTTP/1.1 implementation directly on `Socket`, with no we
 
 ## Upload engines (`web/index.html`)
 
-A single TCP stream on a busy Wi-Fi channel halves its speed after every loss. Parallel streams hold the speed up. iOS Safari also has its own quirks when uploading large Photos videos. WarpDrop handles both with three engines:
+A single TCP stream on a busy Wi-Fi channel halves its speed after every loss. Parallel streams hold the speed up. iOS Safari also has its own quirks when uploading large Photos videos. WarpDrop tries three engines in order until the PC has every byte:
 
 1. **Lanes (default for files ≥ 64 MB).** The file is split into up to 4 equal lanes, and each lane is one long PUT of its share. When a lane drops, it resumes exactly where the PC's data for that lane ends, read from `/status` ranges.
-2. **Read-ahead (automatic switch).** The lane speed is watched over a 5-second window. If it stays below 65% of its best for 6 seconds, the lanes stop. A reader then loads the remaining gaps into memory in 8 MB blocks, up to 6 blocks ahead, while 4 senders upload ready blocks. If this engine isn't faster than the lanes were, it gives up after 8 seconds.
-3. **Safe mode.** One continuous resumable stream from the gap-free prefix. It also finishes any leftover gap after the other engines.
+2. **Stream.** Sends only the **gaps** the PC is still missing, one continuous PUT per gap. After lanes give up, it fills just their holes. It never re-sends data that's already on disk.
+3. **Memory.** Reads the missing blocks into memory (8 MB each, up to 6 ahead) and sends them over 4 connections. This is the last resort for iOS builds that send file bodies empty (WebKit bug 319985), because in-memory bodies aren't affected.
 
-A stalled XHR (no progress for 20 s) is aborted and resumed. Every engine switch and failure is reported to the PC's log.
+**No-progress detection:** a request can "succeed" while the PC receives nothing, for example an empty body. If two such requests in a row make no progress, the engine hands over to the next one instead of retrying forever. A stalled XHR (no progress for 20 s) is aborted and resumed. Every handover and failure is reported to the PC's log. Each finished upload logs how many bytes crossed the network compared with the file size.
+
+On the server, an upload with no activity for 15 minutes (the page was closed) is released and its partial file deleted.
+
+*History:* an earlier version switched to the memory engine when lane speed sagged. A 20-second memory-only speed test showed the sag comes from the iPhone's Wi-Fi uplink, not from reading the file, so the switch was removed. Its fallback had also re-sent data other lanes had already delivered (measured: 125% of the file on the network with one flaky lane; now 100%).
 
 ## Diagnostics
 
